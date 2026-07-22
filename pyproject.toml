@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yahtzee-tui"
+version = "1.0.0"
+description = "Yahtzee in je terminal: muis, toetsenbord en commando's, met bots en een optimale solver"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=1.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+yahtzee = "yahtzee_app.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["yahtzee_app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

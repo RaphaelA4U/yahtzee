@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Yahtzee launcher: runs the app from the ~/.yahtzee checkout.
+APP_DIR="${YAHTZEE_HOME:-$HOME/.yahtzee}"
+
+if [ ! -x "$APP_DIR/.venv/bin/python" ]; then
+    echo "Yahtzee is not installed correctly. Reinstall with:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | bash"
+    exit 1
+fi
+
+exec "$APP_DIR/.venv/bin/python" -m yahtzee_app "$@"
