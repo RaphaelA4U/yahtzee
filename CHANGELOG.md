@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.0
+
+- Statistics rebuilt: every FINISHED game counts (even if you abandon
+  the match afterwards), with breakdowns by assistance (none, hints,
+  coach, auto), opponent difficulty, table size, and rule variant.
+- The footer keys are clickable now: roll, mode, hint, cmd, help, menu.
+- Up to 7 bots at the table (official Yahtzee has no player cap).
+- Bot names come from big US/UK pools, half female, half male.
+- Fixed: the last game column stayed empty on the cards at match end.
+- Bots hold dice a bit more slowly; WIN notes stay quiet when the win
+  is already locked (no more 'need -106 pts' lines).
+
 ## v1.4.1
 
 - The accent border now follows your focus (like tab): around the dice

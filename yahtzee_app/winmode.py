@@ -85,21 +85,26 @@ def choose_keep(
         return oracle.best_keep(card, counts, rolls_left).keep, None
 
     if ctx.rounds_left == 1:
+        if ctx.needed <= 0:
+            # Already ahead of every projection: nothing to gamble for.
+            return oracle.best_keep(card, counts, rolls_left).keep, None
         rated = oracle.success_keeps(card, counts, rolls_left, ctx.needed)
         best_keep, p_win = rated[0]
         ev_keep = oracle.best_keep(card, counts, rolls_left)
         if p_win <= 0.0:
             return ev_keep.keep, (
-                f"WIN: {ctx.needed:.0f} pts needed to catch {ctx.rival} is out "
-                f"of reach; playing for points."
+                f"need {ctx.needed:.0f} pts to catch {ctx.rival}: out of reach, "
+                f"playing for points"
             )
         p_ev = next(p for k, p in rated if k == ev_keep.keep)
         if best_keep == ev_keep.keep:
-            note = f"WIN: need {ctx.needed:.0f} pts to pass {ctx.rival}; chance {p_win:.0%}."
+            if p_win >= 0.995:
+                return best_keep, None  # locked in either way, stay quiet
+            note = f"need {ctx.needed:.0f} pts to pass {ctx.rival}; chance {p_win:.0%}"
         else:
             note = (
-                f"WIN: need {ctx.needed:.0f} pts to pass {ctx.rival}; this keep "
-                f"wins {p_win:.0%} vs {p_ev:.0%} for the max-EV keep."
+                f"need {ctx.needed:.0f} pts to pass {ctx.rival}; this keep "
+                f"wins {p_win:.0%} vs {p_ev:.0%} for the max-EV keep"
             )
         return best_keep, note
 
@@ -119,8 +124,8 @@ def choose_keep(
     if pick[0].keep == rated[0][0].keep:
         return pick[0].keep, None
     note = (
-        f"WIN: {style} vs {ctx.rival} "
-        f"(-{best_ev - pick[0].ev:.1f} EV, sd {pick[1]:.0f})."
+        f"{style} vs {ctx.rival} "
+        f"(-{best_ev - pick[0].ev:.1f} EV, sd {pick[1]:.0f})"
     )
     return pick[0].keep, note
 

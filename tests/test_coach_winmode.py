@@ -86,7 +86,7 @@ def test_win_choose_keep_final_round(oracle):
         active=True, needed=28, target=100, rival="Sol", trailing=True, rounds_left=1
     )
     keep, note = winmode.choose_keep(oracle, card, counts, 1, ctx)
-    assert note is not None and "WIN" in note
+    assert note is not None and "pts to pass" in note
     # The chosen keep must at least match the max-EV keep's success chance.
     rated = dict(oracle.success_keeps(card, counts, 1, needed=28))
     ev_keep = oracle.best_keep(card, counts, 1).keep

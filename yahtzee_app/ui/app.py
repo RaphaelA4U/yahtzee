@@ -15,6 +15,7 @@ Design rules:
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import random
 import sys
@@ -36,7 +37,6 @@ from textual.widgets import Input, RichLog, Static
 from .. import __version__
 from .. import winmode
 from ..bots import (
-    BOT_NAMES,
     DIFFICULTIES,
     DIFFICULTY_INFO,
     DIFFICULTY_LABELS,
@@ -49,7 +49,7 @@ from ..config import (
     clear_saved_game,
     load_game_snapshot,
     load_settings,
-    record_game,
+    record_game_result,
     save_game_snapshot,
     save_settings,
     stats_summary,
@@ -77,15 +77,37 @@ ACCENT = "#875fff"   # Claude-style purple, leaning slightly blue
 HINT = "#ff9e3d"     # orange: hints, coach verdicts, bonuses (never yellow)
 WINC = "#4dd0e1"     # cyan-ish: WIN-mode/standings notes
 
-# Random bot names; unique within a match.
-BOT_NAME_POOL = [
-    "Alex", "Bram", "Carmen", "Daan", "Eva", "Finn", "Gwen", "Hugo",
-    "Iris", "Jules", "Kai", "Lena", "Milo", "Nora", "Otis", "Pip",
-    "Quinn", "Rosa", "Sam", "Tess", "Uma", "Vik", "Wout", "Zoe",
+# Random bot names (US/UK), unique within a match, sampled 50/50 from
+# the female and male pools.
+BOT_NAMES_FEMALE = [
+    "Olivia", "Emma", "Amelia", "Sophia", "Isabella", "Ava", "Mia",
+    "Charlotte", "Grace", "Lily", "Ruby", "Chloe", "Daisy", "Freya",
+    "Poppy", "Evie", "Alice", "Florence", "Willow", "Ivy", "Harper",
+    "Ella", "Scarlett", "Rosie", "Megan", "Abigail", "Hannah", "Lucy",
+    "Zoe", "Erin",
+]
+BOT_NAMES_MALE = [
+    "Oliver", "Jack", "Harry", "George", "Noah", "Charlie", "Jacob",
+    "Alfie", "Freddie", "Oscar", "Leo", "Logan", "Archie", "Theo",
+    "Ethan", "Mason", "Lucas", "Henry", "William", "James", "Liam",
+    "Benjamin", "Elijah", "Owen", "Finley", "Max", "Toby", "Dylan",
+    "Ryan", "Callum",
 ]
 
+
+def sample_bot_names(n: int) -> list[str]:
+    female = random.sample(BOT_NAMES_FEMALE, len(BOT_NAMES_FEMALE))
+    male = random.sample(BOT_NAMES_MALE, len(BOT_NAMES_MALE))
+    pools = [female, male]
+    random.shuffle(pools)
+    return [pools[i % 2].pop() for i in range(n)]
+
+
 # Player colors, distinct from the UI palette above.
-PLAYER_COLOR_POOL = ["#ff6e9c", "#35c9b0", "#5fb0ff", "#a3e635", "#ff8fd2", "#f47983"]
+PLAYER_COLOR_POOL = [
+    "#ff6e9c", "#35c9b0", "#5fb0ff", "#a3e635",
+    "#ff8fd2", "#f47983", "#84e8b0", "#62d3f5",
+]
 
 SHEET_LABELS = [
     "Ones", "Twos", "Threes", "Fours", "Fives", "Sixes",
@@ -145,7 +167,7 @@ def build_players(config: GameConfig) -> list[Player]:
     players = [
         Player(HUMAN_NAME, is_bot=False, card=Scorecard(config.rules), color=ACCENT)
     ]
-    names = random.sample(BOT_NAME_POOL, len(config.difficulties))
+    names = sample_bot_names(len(config.difficulties))
     colors = random.sample(PLAYER_COLOR_POOL, len(config.difficulties))
     for name, color, diff in zip(names, colors, config.difficulties):
         players.append(
@@ -870,6 +892,7 @@ in the final round, variance control just before. Hints always show the
 standings-aware advice near the end.
 
 [b u]Opponents[/b u]
+  1 to 7 bots; official Yahtzee has no player cap.
   [b]Easy[/b]     {DIFFICULTY_INFO['easy']}
   [b]Medium[/b]   {DIFFICULTY_INFO['medium']}
   [b]Hard[/b]     {DIFFICULTY_INFO['hard']}
@@ -965,8 +988,8 @@ class MenuScreen(Screen):
             MenuItem("new", "New game"),
             MenuItem(
                 "bots", "Opponents", "choice",
-                [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 5)],
-                index=max(0, min(3, n_bots - 1)),
+                [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 8)],
+                index=max(0, min(6, n_bots - 1)),
             ),
             MenuItem(
                 "difficulty", "Difficulty", "choice",
@@ -1103,11 +1126,80 @@ class MenuScreen(Screen):
 # The game itself
 # ---------------------------------------------------------------------------
 
-FOOTER_PLAYING = (
-    " r roll   1-5 hold   arrows navigate   enter select   tab focus   "
-    "shift+tab mode   h hint   / cmd   ? help   esc menu"
-)
-FOOTER_GAME_OVER = " n new match   v review   m menu   q quit"
+FOOTER_PLAYING = [
+    ("r roll", "roll"),
+    ("1-5 hold", None),
+    ("arrows navigate", None),
+    ("enter select", None),
+    ("tab focus", None),
+    ("shift+tab mode", "mode"),
+    ("h hint", "hint"),
+    ("/ cmd", "cmd"),
+    ("? help", "help"),
+    ("esc menu", "menu"),
+]
+FOOTER_GAME_OVER = [
+    ("n new match", "new"),
+    ("v review", "review"),
+    ("m menu", "menu"),
+    ("q quit", "quit"),
+]
+
+
+class ActionBar(Static):
+    """Footer key hints; the ones bound to an action are clickable."""
+
+    hovered_idx: reactive[int | None] = reactive(None)
+
+    class Invoked(Message):
+        def __init__(self, action: str) -> None:
+            self.action = action
+            super().__init__()
+
+    def __init__(self, segments: list[tuple[str, str | None]], id: str | None = None) -> None:
+        super().__init__(id=id)
+        self.segments = segments
+        self._ranges: list[tuple[int, int, int]] = []
+
+    def set_segments(self, segments: list[tuple[str, str | None]]) -> None:
+        self.segments = segments
+        self.hovered_idx = None
+        self.refresh()
+
+    def render(self) -> Text:
+        out = Text(" ", no_wrap=True)
+        self._ranges = []
+        for idx, (label, action) in enumerate(self.segments):
+            start = len(out.plain)
+            if action is None:
+                out.append(label, style="dim")
+            elif idx == self.hovered_idx:
+                out.append(label, style=f"bold underline {ACCENT}")
+            else:
+                out.append(label)
+            self._ranges.append((start, len(out.plain), idx))
+            out.append("   ")
+        return out
+
+    def _idx_at(self, x: int) -> int | None:
+        for start, end, idx in self._ranges:
+            if start <= x < end and self.segments[idx][1] is not None:
+                return idx
+        return None
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.hovered_idx = self._idx_at(event.x)
+
+    def on_leave(self) -> None:
+        self.hovered_idx = None
+
+    def on_click(self, event: events.Click) -> None:
+        idx = self._idx_at(event.x)
+        if idx is not None:
+            self.post_message(self.Invoked(self.segments[idx][1]))
+
+    def watch_hovered_idx(self, _) -> None:
+        self.refresh()
 
 
 class GameScreen(Screen):
@@ -1160,6 +1252,7 @@ class GameScreen(Screen):
         self._auto_count = 0
         self._auto_timer = None
         self._last_hint_key = None
+        self._assists: set[str] = set()
 
     # -- resume ------------------------------------------------------------
 
@@ -1260,7 +1353,7 @@ class GameScreen(Screen):
                         for i, p in enumerate(self.players):
                             yield PlayerCard(p, self.n_games, interactive=(i == 0))
                     yield Static("", id="cards-more", markup=True)
-            yield Static(FOOTER_PLAYING, id="footer-keys")
+            yield ActionBar(FOOTER_PLAYING, id="footer-keys")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -1506,7 +1599,7 @@ class GameScreen(Screen):
         turn.set_holds_for(keep)
         target = list(turn.held)
         turn.held = before
-        step = 0.14 if self.delay() > 0 else 0.0
+        step = min(0.5, max(0.18, self.delay() * 0.5)) if self.delay() > 0 else 0.0
         for i in range(5):
             if turn.held[i] != target[i]:
                 turn.held[i] = target[i]
@@ -1529,6 +1622,8 @@ class GameScreen(Screen):
         game = self.game
         turn = game.turn
         is_auto_human = not player.is_bot
+        if is_auto_human:
+            self._assists.add("auto")
         name = "AUTO" if is_auto_human else player.name
         ctx = winmode.WinContext(active=False)
         if is_auto_human and self.win_mode:
@@ -1572,6 +1667,8 @@ class GameScreen(Screen):
         turn = self.game.turn
         counts = turn.counts()
         if grade and player is self.human:
+            if self.mode in ("hints", "coach"):
+                self._assists.add(self.mode)
             decision = record_score(
                 self.coach,
                 self.oracle,
@@ -1599,9 +1696,44 @@ class GameScreen(Screen):
         self.refresh_all()
         self.set_timer(0.05, self.start_turn)
 
+    def _record_current_game(self) -> None:
+        """Record the game that just completed; abandoned matches keep
+        the games that were actually finished."""
+        if self._view_only:
+            return
+        your = self.human.card.total()
+        best = max(p.card.total() for p in self.players)
+        losses = [d.loss for d in self.coach.decisions if d.game == self.game_no]
+        accuracy = round(100 * math.exp(-sum(losses) / 40)) if losses else None
+        assist = next(
+            (a for a in ("auto", "hints", "coach") if a in self._assists), "none"
+        )
+        record_game_result(
+            {
+                "rules": self.config.rules,
+                "n_opponents": len(self.players) - 1,
+                "difficulties": [p.difficulty for p in self.players if p.is_bot],
+                "assist": assist,
+                "your_score": your,
+                "won": your >= best,
+                "accuracy": accuracy,
+                "players": [
+                    {
+                        "name": p.name,
+                        "bot": p.is_bot,
+                        "difficulty": p.difficulty,
+                        "score": p.card.total(),
+                    }
+                    for p in self.players
+                ],
+            }
+        )
+        self._assists = set()
+
     def next_game_or_finish(self) -> None:
         """One game finished: next column, or wrap up the match."""
         if self.game_no < self.n_games:
+            self._record_current_game()
             standings = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
             line = "  ·  ".join(
                 f"[{p.color}]{p.display_name}[/{p.color}] [b]{p.match_total()}[/b]"
@@ -1624,15 +1756,15 @@ class GameScreen(Screen):
         """Match over, inline: no popup. The footer and log take over."""
         if record and not self._recorded:
             self._recorded = True
+            self._record_current_game()
+            # Move the final game into the history so the last column shows
+            # on the cards; match_total() then reads purely from history.
+            for p in self.players:
+                p.history.append(p.card)
+                p.card = Scorecard(self.config.rules)
             save_game_snapshot(self._snapshot(finished=True))
             self._final_accuracy = (
                 self.coach.accuracy() if self.coach.decisions else None
-            )
-            ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
-            record_game(
-                [(p.name, p.is_bot, p.difficulty, p.match_total()) for p in ranked],
-                rules=self.config.rules,
-                accuracy=self._final_accuracy,
             )
         ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
         winner = ranked[0]
@@ -1654,7 +1786,7 @@ class GameScreen(Screen):
                 f"(press [b]v[/b] for the review)"
             )
         self.log_write(f"[dim]{bar}[/dim]")
-        self.query_one("#footer-keys", Static).update(FOOTER_GAME_OVER)
+        self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
         self.refresh_all()
 
     # -- human actions -----------------------------------------------------
@@ -1667,6 +1799,8 @@ class GameScreen(Screen):
             if turn.rolls_left == 0:
                 self.log_write("[dim]No rolls left; fill a box on your card.[/dim]")
             return
+        if self.mode in ("hints", "coach"):
+            self._assists.add(self.mode)
         if turn.rolls_used > 0:
             decision = record_keep(
                 self.coach,
@@ -1941,7 +2075,7 @@ class GameScreen(Screen):
         rules = self.config.rules
         for arg in args:
             if arg.isdigit():
-                n = max(1, min(4, int(arg)))
+                n = max(1, min(7, int(arg)))
             elif arg.lower() in RULESETS:
                 rules = arg.lower()
             else:
@@ -1966,6 +2100,23 @@ class GameScreen(Screen):
         app = self.app
         assert isinstance(app, YahtzeeApp)
         app.start_game(config, replace=True)
+
+    @on(ActionBar.Invoked)
+    def _footer_action(self, event: ActionBar.Invoked) -> None:
+        actions = {
+            "roll": self.action_roll,
+            "mode": self.action_cycle_mode,
+            "hint": self.action_hint,
+            "cmd": self.action_command,
+            "help": self.action_help,
+            "menu": self.action_back,
+            "new": self.action_new_game,
+            "review": self.action_review,
+            "quit": self.action_quit_app,
+        }
+        handler = actions.get(event.action)
+        if handler:
+            handler()
 
     def on_screen_resume(self) -> None:
         self.refresh_all()

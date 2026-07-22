@@ -80,7 +80,7 @@ def record_game(
     rules: str | None = None,
     accuracy: int | None = None,
 ) -> None:
-    """players: (name, is_bot, difficulty, score), winner first."""
+    """Legacy match record (kept for compatibility)."""
     stats = load_stats()
     entry: dict[str, Any] = {
         "date": datetime.now().isoformat(timespec="seconds"),
@@ -97,29 +97,80 @@ def record_game(
     _write_json(STATS_FILE, stats)
 
 
+def record_game_result(entry: dict[str, Any]) -> None:
+    """Record one COMPLETED game (also mid-match), so abandoning a match
+    later never erases games that were actually played."""
+    stats = load_stats()
+    entry = dict(entry, date=datetime.now().isoformat(timespec="seconds"))
+    stats.setdefault("games_v2", []).append(entry)
+    _write_json(STATS_FILE, stats)
+
+
+def _bucket(games: list[dict], key) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for g in games:
+        for k in key(g):
+            out.setdefault(str(k), []).append(g)
+    return out
+
+
+def _line(label: str, games: list[dict]) -> str:
+    n = len(games)
+    wins = sum(1 for g in games if g.get("won"))
+    avg = sum(g.get("your_score", 0) for g in games) / n
+    return f"  {label:<12} {n:>4} games   won {100 * wins / n:>3.0f}%   avg {avg:6.1f}"
+
+
 def stats_summary() -> list[str]:
     stats = load_stats()
-    games = stats.get("games", [])
+    games = stats.get("games_v2", [])
+    legacy = len(stats.get("games", []))
     if not games:
-        return ["No games played yet."]
-    human_scores = []
-    wins = 0
-    for g in games:
-        humans = [p for p in g["players"] if not p["bot"]]
-        if not humans:
-            continue
-        score = humans[0]["score"]
-        human_scores.append(score)
-        best = max(p["score"] for p in g["players"])
-        if score >= best:
-            wins += 1
-    if not human_scores:
-        return ["No games played yet."]
-    n = len(human_scores)
-    return [
-        f"Games played: {n}",
-        f"Won: {wins} ({100 * wins / n:.0f}%)",
-        f"Average score: {sum(human_scores) / n:.1f}",
-        f"Highest score: {max(human_scores)}",
-        "For reference: the optimal strategy averages 254.6.",
+        lines = ["No games recorded yet (every finished game counts, even"]
+        lines.append("if you abandon the match afterwards).")
+        if legacy:
+            lines.append(f"[dim]{legacy} matches from older versions not shown.[/dim]")
+        return lines
+    n = len(games)
+    wins = sum(1 for g in games if g.get("won"))
+    scores = [g.get("your_score", 0) for g in games]
+    accs = [g["accuracy"] for g in games if g.get("accuracy") is not None]
+    lines = [
+        "[b]Overall[/b]",
+        f"  Games played  {n}   won {wins} ({100 * wins / n:.0f}%)",
+        f"  Average score {sum(scores) / n:.1f}   highest {max(scores)}",
     ]
+    if accs:
+        lines.append(f"  Average accuracy {sum(accs) / len(accs):.0f}%")
+    lines.append("  [dim]The optimal strategy averages 254.6 per game.[/dim]")
+
+    by_assist = _bucket(games, lambda g: [g.get("assist", "none")])
+    if by_assist:
+        lines += ["", "[b]By assistance[/b]"]
+        for k in ("none", "hints", "coach", "auto"):
+            if k in by_assist:
+                lines.append(_line(k, by_assist[k]))
+
+    by_diff = _bucket(games, lambda g: sorted(set(g.get("difficulties", []))))
+    if by_diff:
+        lines += ["", "[b]Against difficulty[/b]  [dim](game counts once per level present)[/dim]"]
+        for k in ("easy", "medium", "hard", "optimal"):
+            if k in by_diff:
+                lines.append(_line(k, by_diff[k]))
+
+    by_size = _bucket(games, lambda g: [g.get("n_opponents", "?")])
+    if by_size:
+        lines += ["", "[b]By table size[/b]"]
+        for k in sorted(by_size):
+            label = f"{k} bot" + ("s" if k != "1" else "")
+            lines.append(_line(label, by_size[k]))
+
+    by_rules = _bucket(games, lambda g: [g.get("rules", "official")])
+    if len(by_rules) > 1:
+        lines += ["", "[b]By rule variant[/b]"]
+        for k, v in sorted(by_rules.items()):
+            lines.append(_line(k, v))
+
+    if legacy:
+        lines += ["", f"[dim]Plus {legacy} matches recorded by older versions.[/dim]"]
+    return lines

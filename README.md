@@ -96,7 +96,8 @@ classic paper pad. The highest match total wins.
 
 ### Opponents
 
-Pick 1 to 4 bots and a difficulty (defaults: 2 bots, medium):
+Pick 1 to 7 bots and a difficulty (defaults: 2 bots, medium); official
+Yahtzee has no player cap, so the table maxes out at a cosy eight:
 
 | Level | Average score | Plays like |
 | --- | --- | --- |
