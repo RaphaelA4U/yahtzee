@@ -60,6 +60,36 @@ def _head_version() -> str | None:
     return None
 
 
+def quick_sync_update(fetch_timeout: int = 4) -> bool:
+    """Claude-style eager update at launch, BEFORE the UI starts.
+
+    Fast fetch with a hard timeout so an offline start stays snappy; when an
+    update exists it is pulled and installed right away, and the caller
+    re-execs into the new code. Returns True if an update was installed.
+    """
+    if not is_git_checkout():
+        return False
+    try:
+        fetch = _git("fetch", "--quiet", "origin", timeout=fetch_timeout)
+        if fetch.returncode != 0:
+            return False
+        behind = _git("rev-list", "--count", "HEAD..@{u}")
+        if behind.returncode != 0 or not behind.stdout.strip():
+            return False
+        if int(behind.stdout.strip()) == 0:
+            return False
+        print("Updating yahtzee...", flush=True)
+        deps_before = _git("show", "HEAD:pyproject.toml").stdout
+        pull = _git("pull", "--ff-only", "--quiet", timeout=60)
+        if pull.returncode != 0:
+            return False
+        if deps_before != _git("show", "HEAD:pyproject.toml").stdout:
+            _reinstall_deps()
+        return True
+    except (subprocess.TimeoutExpired, Exception):  # noqa: BLE001
+        return False
+
+
 def check_and_update() -> UpdateResult:
     """Fetch + fast-forward pull. Safe to run in a thread."""
     if not is_git_checkout():

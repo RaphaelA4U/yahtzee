@@ -47,7 +47,9 @@ def test_win_context_only_activates_late(oracle):
     rival = Player("Bot", is_bot=True, difficulty="easy", card=Scorecard())
     ctx = winmode.build_context(me, [rival], oracle, rounds_left=5, enabled=True)
     assert not ctx.active
-    ctx = winmode.build_context(me, [rival], oracle, rounds_left=2, enabled=True)
+    ctx = winmode.build_context(
+        me, [rival], oracle, rounds_left=winmode.WIN_ROUNDS, enabled=True
+    )
     assert ctx.active
     ctx = winmode.build_context(me, [rival], oracle, rounds_left=1, enabled=False)
     assert not ctx.active

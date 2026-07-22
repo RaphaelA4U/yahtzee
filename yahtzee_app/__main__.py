@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 
@@ -30,6 +31,9 @@ def main() -> None:
     parser.add_argument(
         "--rules", metavar="R", help="rule variant: official|free_joker|simple"
     )
+    parser.add_argument(
+        "--games", type=int, metavar="G", help="games per match (1-6, a column each)"
+    )
     parser.add_argument("--seed", type=int, metavar="S", help="seed for the dice")
     args = parser.parse_args()
 
@@ -44,11 +48,28 @@ def main() -> None:
         build_main()
         return
 
+    # Claude-style eager update: pull before the UI starts, then re-exec so
+    # you are always ON the latest version, not merely notified about it.
+    if not args.no_update:
+        from .update import quick_sync_update
+
+        if quick_sync_update():
+            os.execv(
+                sys.executable,
+                [sys.executable, "-m", "yahtzee_app", *sys.argv[1:], "--no-update"],
+            )
+
     initial = None
-    if args.bots is not None or args.level or args.rules or args.seed is not None:
+    if (
+        args.bots is not None
+        or args.level
+        or args.rules
+        or args.seed is not None
+        or args.games is not None
+    ):
         from .bots import DIFFICULTIES
-        from .game import RULESETS
         from .config import load_settings
+        from .game import RULESETS
 
         settings = load_settings()
         levels = [
@@ -64,7 +85,13 @@ def main() -> None:
         rules = (args.rules or settings.get("ruleset", "official")).lower()
         if rules not in RULESETS:
             parser.error(f"unknown rules: {rules} (choose from {', '.join(RULESETS)})")
-        initial = {"difficulties": levels[:n], "rules": rules, "seed": args.seed}
+        n_games = max(1, min(6, args.games or int(settings.get("n_games", 1))))
+        initial = {
+            "difficulties": levels[:n],
+            "rules": rules,
+            "seed": args.seed,
+            "n_games": n_games,
+        }
 
     # Preload the default table before the TUI starts, so a missing table
     # builds with visible progress instead of freezing the interface.

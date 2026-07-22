@@ -16,8 +16,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "mode": "normal",           # normal | hints | coach | auto
     "n_bots": 2,                # an average game: 3 players total
     "difficulty": "medium",
+    "n_games": 3,               # games per match: a column each, like the pad
     "speed": "normal",          # slow | normal | fast | instant
-    "win_mode": False,          # endgame win-probability play in hints/auto
+    "win_mode": True,           # endgame win-probability play in hints/auto
     "last_seen_version": None,  # for the what's-new message after updates
 }
 

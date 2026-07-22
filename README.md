@@ -27,10 +27,11 @@ Requirements: `git` and `python3` 3.10+. The installer puts everything in
 
 ## Auto-update
 
-The app checks for updates in the background every time you open it and
-applies them instantly: on the menu it relaunches itself into the new
-version automatically; mid-game your game is saved and `/restart` (or
-`/update`) applies the update and drops you right back into your game.
+True Claude-style updates: when you type `yahtzee`, any pending update is
+pulled and applied BEFORE the app starts, so you always open the latest
+version (an offline start skips the check and stays instant). Updates
+that land mid-session apply on the menu automatically; mid-game your game
+is saved and `/restart` (or `/update`) drops you right back into it.
 If an update fails, run `/update` inside the app or reopen it with an
 internet connection. Playing itself is fully offline.
 
@@ -76,12 +77,22 @@ win-chance calculation in the final round (via the same dice DP, run on a
 success indicator) and variance control in the round before, based on the
 projected scores of your opponents.
 
+### Matches
+
+A match is 1 to 6 games (set Games in the menu). Every player has their
+own score card with a column per game and a running MATCH total, like the
+classic paper pad. The highest match total wins.
+
 ### More
 
-- Games save automatically; continue from the menu after quitting.
+- Games save automatically; continue (or review a finished match) from
+  the menu.
 - Skip the menu from the shell: `yahtzee --bots 3 --level optimal --rules
-  simple`, reproducible dice with `--seed 42`.
+  simple --games 3`, reproducible dice with `--seed 42`.
 - After an update the app shows what's new.
+- `python -m tools.arena` pits strategies against each other headlessly;
+  it was used to tune WIN mode (exact final-round win-probability play,
+  51.25% head-to-head against pure EV over 3000 matches).
 
 ### Opponents
 

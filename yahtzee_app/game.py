@@ -272,6 +272,11 @@ class Player:
     is_bot: bool = False
     difficulty: Optional[str] = None  # None for humans
     card: Scorecard = field(default_factory=Scorecard)
+    # Finished games in this match (a column per game on the score card).
+    history: list[Scorecard] = field(default_factory=list)
+
+    def match_total(self) -> int:
+        return sum(c.total() for c in self.history) + self.card.total()
 
 
 class TurnState:

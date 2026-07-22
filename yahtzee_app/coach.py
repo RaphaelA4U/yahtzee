@@ -22,6 +22,7 @@ class Decision:
     chosen: str
     best: str
     loss: float        # EV points given away (0 = perfect)
+    game: int = 1      # which game of the match
 
 
 @dataclass
@@ -54,6 +55,7 @@ def record_keep(
     chosen_keep: tuple[int, ...],
     rolls_left: int,
     round_no: int,
+    game_no: int = 1,
 ) -> Decision:
     """Grade a committed keep decision (called right before the reroll)."""
     rated = oracle.rated_keeps(card, counts, rolls_left)
@@ -66,6 +68,7 @@ def record_keep(
         chosen=_fmt_keep(chosen_keep),
         best=_fmt_keep(best.keep),
         loss=max(0.0, best.ev - chosen_ev),
+        game=game_no,
     )
     tracker.decisions.append(decision)
     return decision
@@ -79,6 +82,7 @@ def record_score(
     chosen_cat: int,
     round_no: int,
     rolls_left: int = 0,
+    game_no: int = 1,
 ) -> Decision:
     """Grade a category choice.
 
@@ -102,6 +106,7 @@ def record_score(
         chosen=f"score {CATEGORY_NAMES[chosen_cat]}",
         best=best_desc,
         loss=max(0.0, best_ev - chosen_ev),
+        game=game_no,
     )
     tracker.decisions.append(decision)
     return decision

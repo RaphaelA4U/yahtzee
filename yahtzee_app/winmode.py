@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from .game import Player
 from .solver.oracle import Oracle
 
-EV_BAND = 1.5  # keeps within this EV distance of the best are candidates
+# Tunables, set by arena experiments (tools/arena.py, 3000-match runs):
+# exact final-round win-probability play alone scored best (51.25% vs pure
+# EV head-to-head); the earlier-round variance tilt consistently HURT the
+# win rate, so it is off by default (WIN_ROUNDS=1 never reaches it).
+WIN_ROUNDS = 1
+EV_BAND = 1.5
+TILT_WHEN_LEADING = False
 
 
 @dataclass
@@ -40,16 +46,18 @@ def build_context(
     rounds_left: int,
     enabled: bool,
 ) -> WinContext:
-    """Assess the standings. Only activates in the last two rounds."""
-    if not enabled or not opponents or rounds_left > 2:
+    """Assess the standings. Only activates near the end of the game."""
+    if not enabled or not opponents or rounds_left > WIN_ROUNDS:
         return WinContext(active=False)
+    # Match totals: in a multi-game match earlier columns count too. For a
+    # single game match_total() equals the current card total.
     projections = [
-        (p.card.total() + oracle_for(p, oracle).turn_start_ev(p.card), p.name)
+        (p.match_total() + oracle_for(p, oracle).turn_start_ev(p.card), p.name)
         for p in opponents
     ]
     target, rival = max(projections)
-    my_projection = me.card.total() + oracle.turn_start_ev(me.card)
-    needed = target - me.card.total()
+    my_projection = me.match_total() + oracle.turn_start_ev(me.card)
+    needed = target - me.match_total()
     return WinContext(
         active=True,
         needed=needed,
@@ -102,9 +110,12 @@ def choose_keep(
     if ctx.trailing:
         pick = max(band, key=lambda r: r[1])
         style = "gambling for spread"
-    else:
+    elif TILT_WHEN_LEADING:
         pick = min(band, key=lambda r: r[1])
         style = "protecting the lead"
+    else:
+        pick = rated[0]
+        style = "playing for points"
     if pick[0].keep == rated[0][0].keep:
         return pick[0].keep, None
     note = (
@@ -118,3 +129,29 @@ def choose_option(oracle: Oracle, card, counts: tuple[int, ...], ctx: WinContext
     """Category choice: on the final turn the max-points option maximizes
     win chance too, so EV choice is correct everywhere."""
     return oracle.best_option(card, counts).option
+
+
+class WinAwareBot:
+    """Optimal EV play plus the win-aware endgame layer.
+
+    Used by AUTO mode and by the arena (tools/arena.py) to tune the
+    win-mode parameters for maximum win rate.
+    """
+
+    difficulty = "optimal+win"
+
+    def __init__(self, oracle: Oracle, me: Player, opponents: list[Player]) -> None:
+        self.oracle = oracle
+        self.me = me
+        self.opponents = opponents
+
+    def _context(self) -> WinContext:
+        rounds_left = sum(1 for b in self.me.card.boxes if b is None)
+        return build_context(self.me, self.opponents, self.oracle, rounds_left, True)
+
+    def choose_keep(self, card, counts, rolls_left):
+        keep, _ = choose_keep(self.oracle, card, counts, rolls_left, self._context())
+        return keep
+
+    def choose_option(self, card, counts):
+        return self.oracle.best_option(card, counts).option

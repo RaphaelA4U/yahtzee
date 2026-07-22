@@ -13,7 +13,7 @@ from yahtzee_app.ui.app import (
     GameConfig,
     GameScreen,
     MenuScreen,
-    ScoreSheet,
+    PlayerCard,
     TextPage,
     YahtzeeApp,
 )
@@ -125,7 +125,7 @@ async def test_sheet_cursor_and_pick():
         # Up/down from the dice row moves focus to the sheet.
         await pilot.press("down")
         await pilot.pause()
-        sheet = screen.query_one(ScoreSheet)
+        sheet = screen.query(PlayerCard).first()
         assert sheet.has_focus
         assert sheet.cursor_cat is not None
         before = sheet.cursor_cat
@@ -246,3 +246,22 @@ async def test_bot_game_plays_and_checkpoint():
             if screen.game.round > 1:
                 break
         assert screen.game.round > 1 or screen.game.finished
+
+
+@pytest.mark.asyncio
+async def test_match_rolls_into_second_game():
+    """After 13 rounds the match continues with the next game column."""
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(160, 45)) as pilot:
+        app.start_game(GameConfig(difficulties=["easy"], mode="auto", n_games=2))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, GameScreen)
+        screen.settings["speed"] = "instant"
+        for _ in range(600):
+            await pilot.pause(0.05)
+            if screen.game_no == 2:
+                break
+        assert screen.game_no == 2
+        assert len(screen.human.history) == 1
+        assert screen.human.match_total() >= screen.human.history[0].total()

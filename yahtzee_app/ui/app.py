@@ -1,12 +1,15 @@
 """The Yahtzee TUI, Claude-terminal style.
 
 Design rules:
-- The terminal's own colors: default background and foreground everywhere.
+- The terminal's own colors: default background and foreground everywhere,
+  with purple (ANSI magenta) as the selection/focus accent.
 - Everything is text and ASCII. No buttons, no dialogs, no popups: menus
   are arrow-navigable text, confirmations do not exist (games auto-save),
   and help/stats/review are full pages you enter and leave with escape.
 - Arrow keys work everywhere; the mouse works everywhere (hover highlights,
   click activates).
+- Every player has their own score card, with a column per game of the
+  match, like the classic paper pad.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Center, Horizontal, Vertical, VerticalScroll
+from textual.containers import Center, Horizontal, HorizontalScroll, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
@@ -56,6 +59,8 @@ from ..game import (
     RULESET_INFO,
     RULESET_LABELS,
     RULESETS,
+    UPPER,
+    UPPER_BONUS_THRESHOLD,
     Game,
     Player,
     Scorecard,
@@ -67,7 +72,7 @@ MODES = ["normal", "hints", "coach", "auto"]
 MODE_LABELS = {"normal": "NORMAL", "hints": "HINTS", "coach": "COACH", "auto": "AUTO"}
 
 HUMAN_NAME = "You"
-ACCENT = "yellow"
+ACCENT = "magenta"  # Claude-style purple selection/focus color
 
 SHEET_LABELS = [
     "Ones", "Twos", "Threes", "Fours", "Fives", "Sixes",
@@ -75,22 +80,43 @@ SHEET_LABELS = [
     "YAHTZEE", "Chance",
 ]
 
-LOGO = r"""
- __ __   ____  __ __  ______  ____   ___  ___
-|  |  | /    ||  |  ||      ||    | /  _]/  _]
-|  |  ||  o  ||  |  ||      | |  | /  [_/  [_
-|  ~  ||     ||  _  ||_|  |_| |  ||    |    _]
-|___, ||  _  ||  |  |  |  |   |  ||   [|   [_
-|     ||  |  ||  |  |  |  |   |  ||     |    |
-|____/ |__|__||__|__|  |__|  |____|_____|____|
-
-     .-------.        .-------.
-     | o   o |\       | o     |\
-     |   o   | |      |   o   | |
-     | o   o | |      |     o | |
-     '-------' |      '-------' |
-      \________\       \________\
+# figlet "DOS Rebel"
+LOGO = """\
+                      █████       █████
+                     ░░███       ░░███
+ █████ ████  ██████   ░███████   ███████    █████████  ██████   ██████
+░░███ ░███  ░░░░░███  ░███░░███ ░░░███░    ░█░░░░███  ███░░███ ███░░███
+ ░███ ░███   ███████  ░███ ░███   ░███     ░   ███░  ░███████ ░███████
+ ░███ ░███  ███░░███  ░███ ░███   ░███ ███   ███░   █░███░░░  ░███░░░
+ ░░███████ ░░████████ ████ █████  ░░█████   █████████░░██████ ░░██████
+  ░░░░░███  ░░░░░░░░ ░░░░ ░░░░░    ░░░░░   ░░░░░░░░░  ░░░░░░   ░░░░░░
+  ███ ░███
+ ░░██████
+  ░░░░░░
 """
+
+DIE_ROWS = {
+    1: ["       ", "   o   ", "       "],
+    2: [" o     ", "       ", "     o "],
+    3: [" o     ", "   o   ", "     o "],
+    4: [" o   o ", "       ", " o   o "],
+    5: [" o   o ", "   o   ", " o   o "],
+    6: [" o   o ", " o   o ", " o   o "],
+}
+
+
+def dice_art(values: list[int]) -> str:
+    """Five ASCII dice side by side (for the menu)."""
+    lines = ["", "", "", "", "", ""]
+    for v in values:
+        rows = DIE_ROWS[v]
+        lines[0] += ".-------.    "
+        lines[1] += f"|{rows[0]}|\\   "
+        lines[2] += f"|{rows[1]}| |  "
+        lines[3] += f"|{rows[2]}| |  "
+        lines[4] += "'-------' |  "
+        lines[5] += " \\________\\|  "
+    return "\n".join(lines)
 
 
 @dataclass
@@ -98,6 +124,7 @@ class GameConfig:
     difficulties: list[str] = field(default_factory=lambda: ["medium", "medium"])
     mode: str = "normal"
     rules: str = "official"
+    n_games: int = 3
     seed: int | None = None
 
 
@@ -133,21 +160,12 @@ class AsciiDie(Static):
             self.index = index
             super().__init__()
 
-    PIPS = {
-        1: ["       ", "   o   ", "       "],
-        2: [" o     ", "       ", "     o "],
-        3: [" o     ", "   o   ", "     o "],
-        4: [" o   o ", "       ", " o   o "],
-        5: [" o   o ", "   o   ", " o   o "],
-        6: [" o   o ", " o   o ", " o   o "],
-    }
-
     def __init__(self, index: int) -> None:
         super().__init__(classes="die")
         self.index = index
 
     def render(self) -> Text:
-        rows = ["       ", "   ?   ", "       "] if self.blank else self.PIPS[self.value]
+        rows = ["       ", "   ?   ", "       "] if self.blank else DIE_ROWS[self.value]
         if self.held:
             face = f"bold {ACCENT}"
         elif self.cursor or self.hovered:
@@ -156,7 +174,7 @@ class AsciiDie(Static):
             face = "dim"
         else:
             face = ""
-        art = Text()
+        art = Text(no_wrap=True)
         art.append(".-------.  \n", style=face)
         for i, row in enumerate(rows):
             shadow = "\\ " if i == 0 else " |"
@@ -171,8 +189,7 @@ class AsciiDie(Static):
         elif self.cursor:
             art.append(f">({self.index + 1})<".center(11), style="bold")
         else:
-            style = "bold" if self.hovered else "dim"
-            art.append(f"({self.index + 1})".center(11), style=style)
+            art.append(f"({self.index + 1})".center(11), style="bold" if self.hovered else "dim")
         return art
 
     def watch_value(self, _) -> None:
@@ -201,7 +218,8 @@ class AsciiDie(Static):
 
 
 class DiceRow(Widget, can_focus=True):
-    """The five dice plus an arrow-key cursor."""
+    """The five dice plus an arrow-key cursor. Gets an accent border when
+    it is your move to roll."""
 
     BINDINGS = [
         Binding("left", "cursor_left", "Left", show=False),
@@ -280,16 +298,20 @@ class RollAction(Static):
 
 
 # ---------------------------------------------------------------------------
-# The score sheet: one table, real cells, a column per player
+# Score cards: one card per player, one column per game (like the paper pad)
 # ---------------------------------------------------------------------------
 
+LABEL_W = 13
+COL_W = 6
 
-class ScoreSheet(Widget, can_focus=True):
-    """The classic score sheet on the table: category rows, player columns.
 
-    Your column is interactive: arrows move over the open boxes, enter (or a
-    click) fills the selected box. Cyan numbers preview what the current
-    dice would score; 'x' means the joker rules forbid that box right now.
+class PlayerCard(Widget):
+    """One player's score card with a column per game of the match.
+
+    Only the active game column of YOUR card is interactive: arrows move
+    over the open boxes, enter (or a click) fills the selected box.
+    Cyan numbers preview the current dice; 'x' previews a cross-out
+    (zero); '-' means the joker rules forbid that box right now.
     """
 
     BINDINGS = [
@@ -297,8 +319,6 @@ class ScoreSheet(Widget, can_focus=True):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("space,enter", "pick", "Score", show=False),
     ]
-
-    LABEL_W = 17
 
     class CategoryPicked(Message):
         def __init__(self, category: int) -> None:
@@ -308,20 +328,22 @@ class ScoreSheet(Widget, can_focus=True):
     cursor_cat: reactive[int | None] = reactive(None)
     hovered_cat: reactive[int | None] = reactive(None)
 
-    def __init__(self, players: list[Player]) -> None:
-        super().__init__(id="scoresheet")
-        self.players = players
-        self.current: Player | None = None
+    def __init__(self, player: Player, n_games: int, interactive: bool) -> None:
+        super().__init__(classes="playercard")
+        self.player = player
+        self.n_games = n_games
+        self.interactive = interactive
+        self.can_focus = interactive
+        self.is_turn = False
+        self.match_over = False
         self.preview: dict[int, str] = {}
-        self.col_w = [max(5, min(9, len(p.name) + 2)) for p in players]
-        # line number -> category
         self.line_to_cat = {**{i + 3: i for i in range(6)}, **{i + 7: i for i in range(6, 13)}}
-        self.cat_to_line = {v: k for k, v in self.line_to_cat.items()}
 
     # -- data --------------------------------------------------------------
 
-    def set_state(self, current: Player | None, preview: dict[int, str]) -> None:
-        self.current = current
+    def set_state(self, is_turn: bool, preview: dict[int, str], match_over: bool) -> None:
+        self.is_turn = is_turn
+        self.match_over = match_over
         self.preview = preview
         if not preview:
             self.cursor_cat = None
@@ -329,120 +351,182 @@ class ScoreSheet(Widget, can_focus=True):
             self.cursor_cat = next(iter(sorted(preview)), None)
         self.refresh()
 
+    def _column_cards(self) -> list[Scorecard | None]:
+        """Card per game column: finished games, the active game, then None."""
+        cols: list[Scorecard | None] = list(self.player.history)
+        if not self.match_over:
+            cols.append(self.player.card)
+        while len(cols) < self.n_games:
+            cols.append(None)
+        return cols[: self.n_games]
+
+    @property
+    def active_col(self) -> int:
+        return len(self.player.history)
+
     # -- rendering ---------------------------------------------------------
 
-    def _sep(self) -> Text:
-        line = "+" + "-" * self.LABEL_W + "+" + "+".join("-" * w for w in self.col_w) + "+"
-        return Text(line + "\n", style="dim")
+    def _sep(self, heavy: bool = False) -> Text:
+        ch = "=" if heavy else "-"
+        line = "+" + ch * LABEL_W + ("+" + ch * COL_W) * self.n_games + "+"
+        return Text(line + "\n", style="dim", no_wrap=True)
 
-    def _cells_row(self, label: Text, cells: list[Text]) -> Text:
-        out = Text()
+    def _row(self, label: Text, cells: list[Text]) -> Text:
+        out = Text(no_wrap=True)
         out.append("|", style="dim")
-        label.truncate(self.LABEL_W - 1)
-        label.pad_right(self.LABEL_W - 1 - len(label.plain))
+        label.truncate(LABEL_W - 1)
+        label.pad_right(LABEL_W - 1 - len(label.plain))
         out.append(" ")
         out.append_text(label)
-        out.append("|", style="dim")
-        for w, cell in zip(self.col_w, cells):
-            cell.truncate(w - 2)
-            cell.align("right", w - 2)
+        for cell in cells:
+            out.append("|", style="dim")
+            cell.truncate(COL_W - 2)
+            cell.align("right", COL_W - 2)
             out.append(" ")
             out.append_text(cell)
             out.append(" ")
-            out.append("|", style="dim")
+        out.append("|", style="dim")
         out.append("\n")
         return out
 
     def render(self) -> Text:
-        out = Text()
-        out.append_text(self._sep())
-        header_cells = []
-        for p in self.players:
-            style = f"bold {ACCENT}" if p is self.current else "bold"
-            header_cells.append(Text(p.name, style=style))
-        out.append_text(self._cells_row(Text(""), header_cells))
-        out.append_text(self._sep())
+        p = self.player
+        cols = self._column_cards()
+        name = p.name + (f" ({p.difficulty})" if p.difficulty else "")
+        width = 1 + LABEL_W + (1 + COL_W) * self.n_games
+        out = Text(no_wrap=True)
+        head_style = f"bold {ACCENT}" if self.is_turn else "bold"
+        out.append("+= ", style="dim")
+        out.append(name[: width - 6], style=head_style)
+        out.append(" " + "=" * max(0, width - 4 - len(name)) + "+", style="dim")
+        out.append("\n")
 
-        def value_cell(p: Player, cat: int) -> Text:
-            card = p.card
+        if self.n_games > 1:
+            header = []
+            for i in range(self.n_games):
+                style = f"bold {ACCENT}" if (i == self.active_col and not self.match_over) else "dim"
+                header.append(Text(f"G{i + 1}", style=style))
+            out.append_text(self._row(Text(""), header))
+            out.append_text(self._sep())
+        else:
+            out.append_text(self._sep())
+
+        def value_cell(card: Scorecard | None, cat: int, col: int) -> Text:
+            if card is None:
+                return Text("")
             val = card.boxes[cat]
-            is_you = not p.is_bot
+            active = col == self.active_col and not self.match_over
             if val is not None:
+                if val == 0:
+                    return Text("x", style="bold" if active else "")
                 return Text(str(val), style="bold")
-            if is_you and cat in self.preview:
+            if active and not p.is_bot and cat in self.preview:
+                shown = self.preview[cat]
+                base = "x" if shown.rstrip("!") == "0" else shown
                 style = "cyan"
                 if cat == self.cursor_cat:
                     style = "reverse cyan"
                 elif cat == self.hovered_cat:
                     style = "bold cyan underline"
-                return Text(self.preview[cat], style=style)
-            if is_you and self.preview:
-                return Text("x", style="dim")
+                return Text(base, style=style)
+            if active and not p.is_bot and self.preview:
+                return Text("-", style="dim")  # joker rules forbid this box
             return Text(".", style="dim")
 
         def label_cell(cat: int) -> Text:
+            interactive_now = self.interactive and self.preview and not self.match_over
             style = ""
-            if cat == self.cursor_cat:
+            if cat == self.cursor_cat and interactive_now:
                 style = f"bold {ACCENT}"
-            elif cat == self.hovered_cat and self.preview:
+            elif cat == self.hovered_cat and interactive_now:
                 style = "bold"
-            marker = ">" if cat == self.cursor_cat else " "
-            t = Text()
-            t.append(marker, style=f"bold {ACCENT}" if cat == self.cursor_cat else "")
+            marker = ">" if (cat == self.cursor_cat and interactive_now) else " "
+            t = Text(no_wrap=True)
+            t.append(marker, style=f"bold {ACCENT}" if marker == ">" else "")
             t.append(SHEET_LABELS[cat], style=style)
             return t
 
         for cat in range(6):
             out.append_text(
-                self._cells_row(label_cell(cat), [value_cell(p, cat) for p in self.players])
+                self._row(label_cell(cat), [value_cell(c, cat, i) for i, c in enumerate(cols)])
             )
         out.append_text(self._sep())
         out.append_text(
-            self._cells_row(
+            self._row(
                 Text(" Sum", style="dim"),
-                [Text(str(p.card.upper_subtotal()), style="dim") for p in self.players],
+                [
+                    Text(str(c.upper_subtotal()) if c else "", style="dim")
+                    for c in cols
+                ],
             )
         )
+
+        def bonus_cell(card: Scorecard | None, col: int) -> Text:
+            if card is None:
+                return Text("")
+            if card.upper_bonus():
+                return Text("35", style="green")
+            need = UPPER_BONUS_THRESHOLD - card.upper_subtotal()
+            uppers_open = any(card.boxes[c] is None for c in UPPER)
+            if uppers_open and (col == self.active_col and not self.match_over):
+                return Text(f"({need})", style="dim")
+            return Text("-", style="dim")
+
         out.append_text(
-            self._cells_row(
-                Text(" Bonus (63+)", style="dim"),
-                [
-                    Text(
-                        str(p.card.upper_bonus()) if p.card.upper_bonus() else "-",
-                        style="green" if p.card.upper_bonus() else "dim",
-                    )
-                    for p in self.players
-                ],
+            self._row(
+                Text(" Bonus 63+", style="dim"),
+                [bonus_cell(c, i) for i, c in enumerate(cols)],
             )
         )
         out.append_text(self._sep())
         for cat in range(6, N_CATEGORIES):
             out.append_text(
-                self._cells_row(label_cell(cat), [value_cell(p, cat) for p in self.players])
+                self._row(label_cell(cat), [value_cell(c, cat, i) for i, c in enumerate(cols)])
             )
         out.append_text(
-            self._cells_row(
-                Text(" Yahtzee bonus", style="dim"),
+            self._row(
+                Text(" Ybonus", style="dim"),
                 [
                     Text(
-                        str(p.card.yahtzee_bonus_count * 100)
-                        if p.card.yahtzee_bonus_count
-                        else "-",
-                        style="magenta" if p.card.yahtzee_bonus_count else "dim",
+                        str(c.yahtzee_bonus_count * 100) if c and c.yahtzee_bonus_count else ("-" if c else ""),
+                        style="yellow" if c and c.yahtzee_bonus_count else "dim",
                     )
-                    for p in self.players
+                    for c in cols
                 ],
             )
         )
         out.append_text(self._sep())
         out.append_text(
-            self._cells_row(
+            self._row(
                 Text(" TOTAL", style="bold"),
-                [Text(str(p.card.total()), style=f"bold {ACCENT}") for p in self.players],
+                [
+                    Text(str(c.total()) if c else "", style=f"bold {ACCENT}")
+                    for c in cols
+                ],
             )
         )
-        out.append_text(self._sep())
+        if self.n_games > 1:
+            running = 0
+            match_cells = []
+            for c in cols:
+                if c is None:
+                    match_cells.append(Text(""))
+                else:
+                    running += c.total()
+                    match_cells.append(Text(str(running), style="bold"))
+            out.append_text(self._sep())
+            out.append_text(self._row(Text(" MATCH", style="bold"), match_cells))
+        out.append_text(self._sep(heavy=True))
         return out
+
+    # -- sizing ------------------------------------------------------------
+
+    def get_content_width(self, container, viewport) -> int:
+        lines = self.render().plain.splitlines()
+        return max(len(line) for line in lines)
+
+    def get_content_height(self, container, viewport, width) -> int:
+        return len(self.render().plain.splitlines())
 
     # -- interaction -------------------------------------------------------
 
@@ -469,9 +553,14 @@ class ScoreSheet(Widget, can_focus=True):
             self.post_message(self.CategoryPicked(self.cursor_cat))
 
     def _cat_at(self, y: int) -> int | None:
-        return self.line_to_cat.get(y)
+        # Event coordinates include the (blank or accent) border: -1. With a
+        # single game there is no header row, shifting all lines up by 1.
+        content_line = y - 1 + (1 if self.n_games == 1 else 0)
+        return self.line_to_cat.get(content_line)
 
     def on_click(self, event: events.Click) -> None:
+        if not self.interactive:
+            return
         cat = self._cat_at(event.y)
         if cat is None or cat not in self.preview:
             return
@@ -480,7 +569,8 @@ class ScoreSheet(Widget, can_focus=True):
         self.post_message(self.CategoryPicked(cat))
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
-        self.hovered_cat = self._cat_at(event.y)
+        if self.interactive:
+            self.hovered_cat = self._cat_at(event.y)
 
     def on_leave(self) -> None:
         self.hovered_cat = None
@@ -540,12 +630,24 @@ class AsciiMenu(Widget, can_focus=True):
             self.value = value
             super().__init__()
 
+    class Highlighted(Message):
+        def __init__(self, item_id: str) -> None:
+            self.item_id = item_id
+            super().__init__()
+
     def __init__(self, items: list[MenuItem], id: str | None = None) -> None:
         super().__init__(id=id)
         self.items = items
 
     def visible_items(self) -> list[MenuItem]:
         return [i for i in self.items if i.visible]
+
+    def get_content_width(self, container, viewport) -> int:
+        lines = self.render().plain.splitlines()
+        return max((len(line) for line in lines), default=10) + 1
+
+    def get_content_height(self, container, viewport, width) -> int:
+        return len(self.visible_items())
 
     def item(self, item_id: str) -> MenuItem:
         return next(i for i in self.items if i.id == item_id)
@@ -556,19 +658,22 @@ class AsciiMenu(Widget, can_focus=True):
         self.selected = min(self.selected, len(vis) - 1)
         self.refresh()
 
+    def current_item(self) -> MenuItem | None:
+        vis = self.visible_items()
+        return vis[self.selected] if vis else None
+
     def render(self) -> Text:
-        out = Text()
+        out = Text(no_wrap=True)
         for idx, item in enumerate(self.visible_items()):
             selected = idx == self.selected and self.has_focus
             hovered = idx == self.hovered
-            prefix = "> " if selected else "  "
             if selected:
                 style = f"bold {ACCENT}"
             elif hovered:
                 style = "bold"
             else:
                 style = ""
-            out.append(prefix, style=f"bold {ACCENT}" if selected else "")
+            out.append("> " if selected else "  ", style=f"bold {ACCENT}" if selected else "")
             if item.kind == "choice":
                 out.append(f"{item.label:<12}", style=style)
                 out.append("< ", style="dim")
@@ -620,6 +725,9 @@ class AsciiMenu(Widget, can_focus=True):
 
     def watch_selected(self, _) -> None:
         self.refresh()
+        item = self.current_item()
+        if item:
+            self.post_message(self.Highlighted(item.id))
 
     def watch_hovered(self, _) -> None:
         self.refresh()
@@ -667,15 +775,15 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]r / space[/b]      roll
   [b]1 to 5[/b]         hold / release a die (or click it)
   [b]left/right[/b]     move the die cursor
-  [b]up/down[/b]        move over the score sheet
+  [b]up/down[/b]        move over your score card
   [b]enter / space[/b]  hold the selected die, or fill the selected box
-  [b]tab[/b]            switch focus: dice, score sheet, command bar
+  [b]tab[/b]            switch focus: dice, your card, command bar
   [b]h[/b]              hint (from the optimal solver)
   [b]shift+tab[/b]      switch mode: NORMAL, HINTS, COACH, AUTO
   [b]/[/b]              open the command bar
   [b]?[/b] or [b]F1[/b]        help
-  [b]n[/b]              new game   [b]v[/b] review   [b]m[/b]/[b]esc[/b] menu   [b]q[/b] quit
-                 (leaving always saves the game; continue from the menu)
+  [b]n[/b]              new match   [b]v[/b] review   [b]m[/b]/[b]esc[/b] menu   [b]q[/b] quit
+                 (leaving always saves; continue from the menu)
 
 [b u]Commands[/b u]  (type / followed by the command)
   [b]/help[/b] or [b]/?[/b]     this help
@@ -684,9 +792,9 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]/coach on|off[/b]   coach mode (EV verdict after every decision)
   [b]/auto[/b]           auto mode (the solver plays your turns)
   [b]/mode X[/b]         normal, hints, coach, or auto
-  [b]/win on|off[/b]     endgame win-probability play in hints/auto
+  [b]/win on|off[/b]     endgame win-probability play in AUTO
   [b]/review[/b]         your decisions so far, worst first
-  [b]/new [n] [level] [rules][/b]  new game, e.g. /new 3 optimal simple
+  [b]/new [n] [level] [rules][/b]  new match, e.g. /new 3 optimal simple
   [b]/rules[/b]          show the active rule variant
   [b]/speed X[/b]        bot speed: slow, normal, fast, instant
   [b]/stats[/b]          your statistics
@@ -698,14 +806,23 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
 
 [b u]Modes[/b u]  (shift+tab cycles)
   [b]NORMAL[/b]  regular play
-  [b]HINTS[/b]   solver advice after every roll, before you decide
-  [b]COACH[/b]   verdict after every decision, plus a post-game review
+  [b]HINTS[/b]   BEFORE you decide, the optimal solver shows the best keep
+           or box with expected values, so you can follow or ignore it
+  [b]COACH[/b]   you decide first; AFTER each decision the solver grades it
+           (EV lost vs optimal), and the match ends with an accuracy
+           score and a review of your worst mistakes
   [b]AUTO[/b]    the solver plays your turns automatically
 
+[b u]The match[/b u]
+A match is 1 to 6 games; every game fills one column on your card, like
+the classic paper pad. The MATCH row keeps the running total; the highest
+match total wins.
+
 [b u]WIN mode[/b u]  (/win, the video's asterisk)
-Maximizing points is not maximizing win chance. With WIN on, hints and
-AUTO switch in the last two rounds: exact win-probability play in the
-final round, variance control in the one before.
+Maximizing points is not maximizing win chance. With WIN on (default),
+AUTO plays the endgame for win probability: exact win-chance calculation
+in the final round, variance control just before. Hints always show the
+standings-aware advice near the end.
 
 [b u]Opponents[/b u]
   [b]Easy[/b]     {DIFFICULTY_INFO['easy']}
@@ -740,8 +857,8 @@ def review_text(tracker: CoachTracker, title: str) -> str:
     for d in tracker.worst(8):
         if d.loss < 0.05:
             continue
-        lines.append(f"  round {d.round:>2}  [{d.dice}]  you: {d.chosen}")
-        lines.append(f"           best: {d.best}  [red]-{d.loss:.1f} EV[/red]")
+        lines.append(f"  game {d.game} round {d.round:>2}  ({d.dice})  you: {d.chosen}")
+        lines.append(f"             best: {d.best}  [red]-{d.loss:.1f} EV[/red]")
     perfect = sum(1 for d in tracker.decisions if d.loss < 0.05)
     lines.append("")
     lines.append(f"Perfect decisions: {perfect}/{len(tracker.decisions)}")
@@ -752,6 +869,18 @@ def review_text(tracker: CoachTracker, title: str) -> str:
 # Menu
 # ---------------------------------------------------------------------------
 
+MENU_INFO = {
+    "continue": "Reopen your last game right where it stopped.",
+    "view": "Look back at the final cards of your last match.",
+    "new": "Start a new match with the settings below.",
+    "bots": "Number of computer opponents at the table.",
+    "games": "Games per match; every game fills one column on your card.",
+    "hints": "Solver advice after every roll (switch anytime with shift+tab).",
+    "help": "All keys, commands, modes, and rules.",
+    "stats": "Your match history and averages.",
+    "quit": "See you next time.",
+}
+
 
 class MenuScreen(Screen):
     BINDINGS = [
@@ -761,17 +890,14 @@ class MenuScreen(Screen):
 
     def compose(self) -> ComposeResult:
         settings = load_settings()
-        diff_idx = max(
-            0, DIFFICULTIES.index(settings.get("difficulty", "medium"))
-            if settings.get("difficulty") in DIFFICULTIES else 1
-        )
-        rules_idx = max(
-            0, RULESETS.index(settings.get("ruleset", "official"))
-            if settings.get("ruleset") in RULESETS else 0
-        )
+        diff = settings.get("difficulty", "medium")
+        diff_idx = DIFFICULTIES.index(diff) if diff in DIFFICULTIES else 1
+        rules = settings.get("ruleset", "official")
+        rules_idx = RULESETS.index(rules) if rules in RULESETS else 0
         n_bots = int(settings.get("n_bots", 2))
+        n_games = int(settings.get("n_games", 3))
         items = [
-            MenuItem("continue", "Continue saved game"),
+            MenuItem("continue", "Continue last game"),
             MenuItem("new", "New game"),
             MenuItem(
                 "bots", "Opponents", "choice",
@@ -789,6 +915,11 @@ class MenuScreen(Screen):
                 index=rules_idx,
             ),
             MenuItem(
+                "games", "Games", "choice",
+                [(str(n), n) for n in range(1, 7)],
+                index=max(0, min(5, n_games - 1)),
+            ),
+            MenuItem(
                 "hints", "Hints", "choice",
                 [("off", "normal"), ("on", "hints")],
                 index=1 if settings.get("mode") == "hints" else 0,
@@ -800,34 +931,68 @@ class MenuScreen(Screen):
         with Center(id="menu-center"):
             with Vertical(id="menu-box"):
                 yield Static(LOGO, id="menu-logo")
+                yield Static(
+                    dice_art([random.randint(1, 6) for _ in range(5)]),
+                    id="menu-dice",
+                )
                 yield Static(f"v{__version__}", id="menu-version")
                 yield AsciiMenu(items, id="menu")
+                yield Static("", id="menu-info", markup=True)
                 yield Static(" ↑↓ select  ←→ change  enter confirm", id="menu-footer")
 
     def on_mount(self) -> None:
         self._refresh_continue()
         self.query_one(AsciiMenu).focus()
+        self._update_info()
 
     def on_screen_resume(self) -> None:
         self._refresh_continue()
+        self.query_one("#menu-dice", Static).update(
+            dice_art([random.randint(1, 6) for _ in range(5)])
+        )
 
     def _refresh_continue(self) -> None:
         menu = self.query_one(AsciiMenu)
-        menu.set_visible("continue", load_game_snapshot() is not None)
+        snapshot = load_game_snapshot()
+        item = menu.item("continue")
+        item.label = "View last game" if (snapshot or {}).get("finished") else "Continue last game"
+        menu.set_visible("continue", snapshot is not None)
+
+    def _update_info(self) -> None:
+        menu = self.query_one(AsciiMenu)
+        item = menu.current_item()
+        if item is None:
+            return
+        if item.id == "difficulty":
+            info = DIFFICULTY_INFO[str(item.value)]
+        elif item.id == "rules":
+            info = RULESET_INFO[str(item.value)]
+        elif item.id == "continue":
+            snapshot = load_game_snapshot()
+            info = MENU_INFO["view"] if (snapshot or {}).get("finished") else MENU_INFO["continue"]
+        else:
+            info = MENU_INFO.get(item.id, "")
+        self.query_one("#menu-info", Static).update(f"[dim]{info}[/dim]")
+
+    @on(AsciiMenu.Highlighted)
+    def _highlighted(self, _: AsciiMenu.Highlighted) -> None:
+        self._update_info()
 
     @on(AsciiMenu.Changed)
     def _changed(self, event: AsciiMenu.Changed) -> None:
         settings = load_settings()
-        menu = self.query_one(AsciiMenu)
         if event.item_id == "bots":
             settings["n_bots"] = event.value
         elif event.item_id == "difficulty":
             settings["difficulty"] = event.value
         elif event.item_id == "rules":
             settings["ruleset"] = event.value
+        elif event.item_id == "games":
+            settings["n_games"] = event.value
         elif event.item_id == "hints":
             settings["mode"] = event.value
         save_settings(settings)
+        self._update_info()
 
     @on(AsciiMenu.Activated)
     def _activated(self, event: AsciiMenu.Activated) -> None:
@@ -841,6 +1006,7 @@ class MenuScreen(Screen):
                     difficulties=snapshot["config"]["difficulties"],
                     mode=snapshot["config"].get("mode", "normal"),
                     rules=snapshot["config"].get("rules", "official"),
+                    n_games=int(snapshot.get("n_games", 1)),
                 )
                 app.start_game(config, snapshot=snapshot)
         elif event.item_id == "new":
@@ -849,6 +1015,7 @@ class MenuScreen(Screen):
                 * int(menu.item("bots").value),
                 mode=str(menu.item("hints").value),
                 rules=str(menu.item("rules").value),
+                n_games=int(menu.item("games").value),
             )
             app.start_game(config)
         elif event.item_id == "help":
@@ -873,7 +1040,7 @@ FOOTER_PLAYING = (
     " r roll   1-5 hold   arrows navigate   enter select   tab focus   "
     "shift+tab mode   h hint   / cmd   ? help   esc menu"
 )
-FOOTER_GAME_OVER = " n new game   v review   m menu   q quit"
+FOOTER_GAME_OVER = " n new match   v review   m menu   q quit"
 
 
 class GameScreen(Screen):
@@ -885,12 +1052,12 @@ class GameScreen(Screen):
         Binding("4", "hold(3)", show=False),
         Binding("5", "hold(4)", show=False),
         Binding("left,right", "focus_dice", show=False),
-        Binding("up,down", "focus_sheet", show=False),
+        Binding("up,down", "focus_card", show=False),
         Binding("h", "hint", "Hint"),
         Binding("shift+tab", "cycle_mode", "Mode", priority=True),
         Binding("slash", "command", "Command", show=False),
         Binding("question_mark,f1", "help", "Help"),
-        Binding("n", "new_game", "New game", show=False),
+        Binding("n", "new_game", "New match", show=False),
         Binding("v", "review", "Review", show=False),
         Binding("m", "to_menu", "Menu", show=False),
         Binding("escape", "back", "Menu", show=False),
@@ -902,9 +1069,12 @@ class GameScreen(Screen):
         self.config = config
         self.mode = config.mode
         self.settings = load_settings()
-        self.win_mode = bool(self.settings.get("win_mode", False))
+        self.win_mode = bool(self.settings.get("win_mode", True))
+        self.n_games = max(1, min(6, config.n_games))
+        self.game_no = 1
+        self._view_only = False
         if snapshot:
-            self.players, self.game, self.coach = self._restore(snapshot)
+            self._restore(snapshot)
         else:
             self.players = build_players(config)
             self.game = Game(self.players, seed=config.seed)
@@ -919,18 +1089,25 @@ class GameScreen(Screen):
         self._rolling = False
         self._recorded = False
         self._final_accuracy: int | None = None
+        self._last_logged = (0, 0)
 
     # -- resume ------------------------------------------------------------
 
-    def _restore(self, snap: dict) -> tuple[list[Player], Game, CoachTracker]:
+    def _restore(self, snap: dict) -> None:
         players = []
         for p in snap["players"]:
             card = Scorecard(self.config.rules)
             card.boxes = [b if b is None else int(b) for b in p["boxes"]]
             card.yahtzee_bonus_count = int(p.get("ybonus", 0))
-            players.append(
-                Player(p["name"], is_bot=p["bot"], difficulty=p.get("difficulty"), card=card)
+            player = Player(
+                p["name"], is_bot=p["bot"], difficulty=p.get("difficulty"), card=card
             )
+            for h in p.get("history", []):
+                past = Scorecard(self.config.rules)
+                past.boxes = [b if b is None else int(b) for b in h["boxes"]]
+                past.yahtzee_bonus_count = int(h.get("ybonus", 0))
+                player.history.append(past)
+            players.append(player)
         game = Game(players)
         game.round = int(snap["round"])
         game.current_idx = int(snap["current_idx"])
@@ -938,10 +1115,18 @@ class GameScreen(Screen):
         game.turn.dice = [int(d) for d in turn.get("dice", [1] * 5)]
         game.turn.held = [bool(h) for h in turn.get("held", [False] * 5)]
         game.turn.rolls_used = int(turn.get("rolls_used", 0))
-        coach = CoachTracker(decisions=[Decision(**d) for d in snap.get("coach", [])])
-        return players, game, coach
+        self.players = players
+        self.game = game
+        self.coach = CoachTracker(
+            decisions=[Decision(**d) for d in snap.get("coach", [])]
+        )
+        self.game_no = int(snap.get("game_no", 1))
+        self.n_games = int(snap.get("n_games", self.n_games))
+        if snap.get("finished"):
+            self.game.finished = True
+            self._view_only = True
 
-    def _snapshot(self) -> dict:
+    def _snapshot(self, finished: bool = False) -> dict:
         turn = self.game.turn
         return {
             "version": __version__,
@@ -950,6 +1135,9 @@ class GameScreen(Screen):
                 "mode": self.mode,
                 "rules": self.config.rules,
             },
+            "n_games": self.n_games,
+            "game_no": self.game_no,
+            "finished": finished,
             "round": self.game.round,
             "current_idx": self.game.current_idx,
             "turn": {
@@ -964,6 +1152,10 @@ class GameScreen(Screen):
                     "difficulty": p.difficulty,
                     "boxes": p.card.boxes,
                     "ybonus": p.card.yahtzee_bonus_count,
+                    "history": [
+                        {"boxes": h.boxes, "ybonus": h.yahtzee_bonus_count}
+                        for h in p.history
+                    ],
                 }
                 for p in self.players
             ],
@@ -988,31 +1180,44 @@ class GameScreen(Screen):
                             yield Static("", id="turn-note", markup=True)
                     yield RichLog(id="log", markup=True, wrap=True, auto_scroll=True)
                     yield Input(placeholder="/help for commands", id="command")
-                yield ScoreSheet(self.players)
+                with HorizontalScroll(id="cards-row"):
+                    for i, p in enumerate(self.players):
+                        yield PlayerCard(p, self.n_games, interactive=(i == 0))
             yield Static(FOOTER_PLAYING, id="footer-keys")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
         names = ", ".join(f"{p.name} ({p.difficulty})" for p in self.players if p.is_bot)
-        log.write(f"[b]New game![/b] Opponents: {names}.")
-        log.write(
-            f"Game mode: [b]{RULESET_LABELS[self.config.rules]}[/b]"
-            + ("  ·  [b]WIN[/b] mode on" if self.win_mode else "")
-        )
-        log.write("Type [b]/help[/b] or press [b]?[/b] for all keys and commands.")
-        if self.mode == "hints":
-            log.write("[yellow]Hint mode is on.[/yellow]")
-        if self.mode == "coach":
-            log.write("[yellow]Coach mode is on: every decision gets a verdict.[/yellow]")
+        if self._view_only:
+            log.write("[b]Your last match.[/b] Press n for a new one, m for the menu.")
+        else:
+            log.write(f"[b]New match![/b] Opponents: {names}.")
+            log.write(
+                f"Mode [b]{RULESET_LABELS[self.config.rules]}[/b] · "
+                f"{self.n_games} game{'s' if self.n_games > 1 else ''} per match"
+            )
+            log.write("Type [b]/help[/b] or press [b]?[/b] for all keys and commands.")
+            if self.mode == "hints":
+                log.write("[yellow]Hint mode is on.[/yellow]")
+            if self.mode == "coach":
+                log.write("[yellow]Coach mode is on: every decision gets a verdict.[/yellow]")
         self.query_one(DiceRow).focus()
         self.refresh_all()
-        self.call_after_refresh(self.start_turn)
+        if self._view_only:
+            self._recorded = True
+            self._final_accuracy = self.coach.accuracy() if self.coach.decisions else None
+            self.finish_match(record=False)
+        else:
+            self.call_after_refresh(self.start_turn)
 
     # -- helpers -----------------------------------------------------------
 
     @property
     def human(self) -> Player:
         return self.players[0]
+
+    def human_card_widget(self) -> PlayerCard:
+        return self.query(PlayerCard).first()
 
     def is_human_turn(self) -> bool:
         return not self.game.finished and not self.game.current.is_bot
@@ -1031,18 +1236,18 @@ class GameScreen(Screen):
     def rounds_left_for(self, player: Player) -> int:
         return sum(1 for b in player.card.boxes if b is None)
 
-    def _win_context(self) -> winmode.WinContext:
+    def _win_context(self, enabled: bool = True) -> winmode.WinContext:
         return winmode.build_context(
             self.human,
             [p for p in self.players if p.is_bot],
             self.oracle,
             self.rounds_left_for(self.human),
-            self.win_mode,
+            enabled,
         )
 
     def refresh_all(self) -> None:
         self.refresh_dice()
-        self.refresh_sheet()
+        self.refresh_cards()
         self.refresh_status()
 
     def refresh_dice(self) -> None:
@@ -1056,67 +1261,91 @@ class GameScreen(Screen):
             die.held = turn.held[i] and turn.rolls_used > 0
         roll = self.query_one(RollAction)
         note = self.query_one("#turn-note", Static)
+        must_roll = self.human_may_act() and turn.rolls_used == 0
+        must_fill = self.human_may_act() and turn.rolls_left == 0
+        row.set_class(must_roll, "attention")
+        self.human_card_widget().set_class(must_fill, "attention")
         if self.game.finished:
             roll.enabled = False
-            note.update("[b]Game over[/b]")
+            note.update("[b]Match over[/b]")
             return
-        active = self.human_may_act()
-        roll.enabled = active and turn.can_roll()
+        roll.enabled = self.human_may_act() and turn.can_roll()
         roll.rolls_left = turn.rolls_left
         p = self.game.current
+        lines = []
         if not p.is_bot and self.mode == "auto":
-            note.update("[cyan]AUTO plays for you[/cyan]")
+            lines.append("[cyan]AUTO plays for you[/cyan]")
         elif p.is_bot:
-            note.update(f"[dim]{p.name} is thinking...[/dim]")
+            lines.append(f"[dim]{p.name} is thinking...[/dim]")
         elif turn.rolls_used == 0:
-            note.update("[b]Your turn![/b] press r")
+            lines.append(f"[b {ACCENT}]Your turn![/b {ACCENT}] press r")
         elif turn.rolls_left == 0:
-            note.update("Pick a box on the sheet")
+            lines.append("Fill a box on your card")
         else:
-            note.update("Hold dice, roll again,\nor score now")
+            lines.append("Hold dice, roll again,\nor score now")
+        if self.is_human_turn():
+            card = self.human.card
+            need = UPPER_BONUS_THRESHOLD - card.upper_subtotal()
+            if need > 0 and any(card.boxes[c] is None for c in UPPER):
+                lines.append(f"[dim]Bonus 63+: need {need} more[/dim]")
+        note.update("\n".join(lines))
 
     def refresh_status(self) -> None:
         if not self.is_mounted:
             return
         status = self.query_one("#statusbar", Static)
+        game_part = (
+            f"game [b]{self.game_no}/{self.n_games}[/b]  ·  " if self.n_games > 1 else ""
+        )
         if self.game.finished:
-            winner, top = self.game.rankings()[0]
+            ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
+            winner = ranked[0]
             who = "you" if not winner.is_bot else winner.name
             status.update(
-                f" [b]GAME OVER[/b]  ·  {who} won with [b]{top}[/b] points"
+                f" [b]MATCH OVER[/b]  ·  {who} won with [b]{winner.match_total()}[/b] points"
             )
             return
         p = self.game.current
         who = f"[b {ACCENT}]YOUR TURN[/b {ACCENT}]" if not p.is_bot else f"turn: [b]{p.name}[/b]"
         win = "on" if self.win_mode else "off"
         status.update(
-            f" YAHTZEE [dim]v{__version__}[/dim]  ·  round [b]{self.game.round}/13[/b]"
-            f"  ·  {who}  ·  [b]{MODE_LABELS[self.mode]}[/b] [dim](shift+tab)[/dim]"
-            f"  ·  win {win}  ·  [dim]{RULESET_LABELS[self.config.rules]}[/dim]"
+            f" YAHTZEE [dim]v{__version__}[/dim]  ·  {game_part}"
+            f"round [b]{self.game.round}/13[/b]  ·  {who}  ·  "
+            f"[b]{MODE_LABELS[self.mode]}[/b] [dim](shift+tab)[/dim]  ·  "
+            f"win {win}  ·  [dim]{RULESET_LABELS[self.config.rules]}[/dim]"
         )
 
-    def refresh_sheet(self) -> None:
+    def refresh_cards(self) -> None:
         if not self.is_mounted:
             return
         turn = self.game.turn
         preview: dict[int, str] = {}
-        if self.is_human_turn() and turn.rolls_used > 0 and not self.game.finished:
+        if self.is_human_turn() and turn.rolls_used > 0:
             for opt in self.human.card.options(turn.counts()):
                 marker = "!" if opt.forced else ""
                 preview[opt.category] = f"{opt.points}{marker}"
-        sheet = self.query_one(ScoreSheet)
-        sheet.set_state(None if self.game.finished else self.game.current, preview)
+        for widget in self.query(PlayerCard):
+            is_turn = not self.game.finished and widget.player is self.game.current
+            widget.set_state(
+                is_turn,
+                preview if widget.player is self.human else {},
+                match_over=self.game.finished,
+            )
 
     # -- turn flow ---------------------------------------------------------
 
     def start_turn(self) -> None:
-        if not self.is_mounted:
+        if not self.is_mounted or self._view_only:
             return
         if self.game.finished:
-            self.finish_game()
+            self.next_game_or_finish()
             return
         self.checkpoint()
         p = self.game.current
+        if self.game.current_idx == 0 and self._last_logged != (self.game_no, self.game.round):
+            self._last_logged = (self.game_no, self.game.round)
+            game_part = f"Game {self.game_no} · " if self.n_games > 1 else ""
+            self.log_write(f"[dim]── {game_part}Round {self.game.round}/13 " + "─" * 18 + "[/dim]")
         self.refresh_all()
         if p.is_bot:
             self._turn_worker = self.run_worker(
@@ -1128,9 +1357,7 @@ class GameScreen(Screen):
                 exclusive=False,
             )
         else:
-            self.log_write(
-                f"[b]-- Round {self.game.round}: your turn --[/b] (r to roll)"
-            )
+            self.query_one(DiceRow).focus()
 
     async def _animate_roll(self) -> None:
         turn = self.game.turn
@@ -1182,7 +1409,7 @@ class GameScreen(Screen):
                             self.oracle, player.card, counts, turn.rolls_left, ctx
                         )
                         if note:
-                            self.log_write(f"[magenta]{note}[/magenta]")
+                            self.log_write(f"[cyan]{note}[/cyan]")
                     else:
                         keep = bot.choose_keep(player.card, counts, turn.rolls_left)
                     if keep != counts:
@@ -1211,54 +1438,75 @@ class GameScreen(Screen):
                 option.category,
                 self.game.round,
                 rolls_left=turn.rolls_left,
+                game_no=self.game_no,
             )
             if self.mode == "coach":
                 self.log_write(f"[yellow]{verdict_line(decision)}[/yellow]")
         player.card.apply(option, counts)
         name = prefix or player.name
-        extra = " [magenta]+100 yahtzee bonus![/magenta]" if option.extra_bonus else ""
-        joker = " (joker)" if option.is_joker else ""
+        name_style = ACCENT if player is self.human else "bold"
+        extra = " [yellow]+100 bonus![/yellow]" if option.extra_bonus else ""
+        joker = " [dim](joker)[/dim]" if option.is_joker else ""
         dice_str = " ".join(str(d) for d in sorted(turn.dice))
+        pts = f"[b]{option.points}[/b]" if option.points else "[dim]x[/dim]"
         self.log_write(
-            f"{name}: [{dice_str}] -> [b]{CATEGORY_NAMES[option.category]}[/b]"
-            f"{joker}: {option.points} pts{extra}"
+            f"[{name_style}]{name:<6}[/{name_style}] [dim]({dice_str})[/dim] "
+            f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}"
         )
         self.game.advance()
         self.refresh_all()
         self.set_timer(0.05, self.start_turn)
 
-    def finish_game(self) -> None:
-        """Game over, inline: no popup. The footer and log take over."""
-        if not self._recorded:
+    def next_game_or_finish(self) -> None:
+        """One game finished: next column, or wrap up the match."""
+        if self.game_no < self.n_games:
+            standings = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
+            line = "  ·  ".join(f"{p.name} {p.match_total()}" for p in standings)
+            self.log_write(f"[b]Game {self.game_no} done.[/b] Standings: {line}")
+            for p in self.players:
+                p.history.append(p.card)
+                p.card = Scorecard(self.config.rules)
+            self.game_no += 1
+            self.game = Game(self.players)
+            self.log_write(f"[b]Game {self.game_no} of {self.n_games}![/b]")
+            self.checkpoint()
+            self.refresh_all()
+            self.set_timer(1.0, self.start_turn)
+        else:
+            self.finish_match()
+
+    def finish_match(self, record: bool = True) -> None:
+        """Match over, inline: no popup. The footer and log take over."""
+        if record and not self._recorded:
             self._recorded = True
-            clear_saved_game()
+            save_game_snapshot(self._snapshot(finished=True))
             self._final_accuracy = (
                 self.coach.accuracy() if self.coach.decisions else None
             )
-            ranked = self.game.rankings()
+            ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
             record_game(
-                [(p.name, p.is_bot, p.difficulty, s) for p, s in ranked],
+                [(p.name, p.is_bot, p.difficulty, p.match_total()) for p in ranked],
                 rules=self.config.rules,
                 accuracy=self._final_accuracy,
             )
-            winner, _ = ranked[0]
-            bar = "=" * 46
-            self.log_write(f"[dim]{bar}[/dim]")
-            if winner.is_bot:
-                self.log_write(f"[b]  GAME OVER  ·  {winner.name} wins[/b]")
-            else:
-                self.log_write(f"[b green]  GAME OVER  ·  You win![/b green]")
-            for i, (p, score) in enumerate(ranked, start=1):
-                diff = f" ({p.difficulty})" if p.difficulty else ""
-                self.log_write(f"  {i}. {p.name}{diff}: [b]{score}[/b] points")
-            if self._final_accuracy is not None:
-                self.log_write(
-                    f"  Your accuracy: [b]{self._final_accuracy}%[/b] "
-                    f"(press [b]v[/b] for the review)"
-                )
-            self.log_write(f"[dim]{bar}[/dim]")
-            self.log_write("[b]n[/b] new game   [b]v[/b] review   [b]m[/b] menu")
-            self.query_one("#footer-keys", Static).update(FOOTER_GAME_OVER)
+        ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
+        winner = ranked[0]
+        bar = "=" * 44
+        self.log_write(f"[dim]{bar}[/dim]")
+        if winner.is_bot:
+            self.log_write(f"[b]  MATCH OVER  ·  {winner.name} wins[/b]")
+        else:
+            self.log_write("[b green]  MATCH OVER  ·  You win![/b green]")
+        for i, p in enumerate(ranked, start=1):
+            diff = f" ({p.difficulty})" if p.difficulty else ""
+            self.log_write(f"  {i}. {p.name}{diff}: [b]{p.match_total()}[/b] points")
+        if self._final_accuracy is not None:
+            self.log_write(
+                f"  Your accuracy: [b]{self._final_accuracy}%[/b] "
+                f"(press [b]v[/b] for the review)"
+            )
+        self.log_write(f"[dim]{bar}[/dim]")
+        self.query_one("#footer-keys", Static).update(FOOTER_GAME_OVER)
         self.refresh_all()
 
     # -- human actions -----------------------------------------------------
@@ -1269,7 +1517,7 @@ class GameScreen(Screen):
         turn = self.game.turn
         if not turn.can_roll():
             if turn.rolls_left == 0:
-                self.log_write("[dim]No rolls left; pick a box on the sheet.[/dim]")
+                self.log_write("[dim]No rolls left; fill a box on your card.[/dim]")
             return
         if turn.rolls_used > 0:
             decision = record_keep(
@@ -1280,6 +1528,7 @@ class GameScreen(Screen):
                 turn.held_counts(),
                 turn.rolls_left,
                 self.game.round,
+                game_no=self.game_no,
             )
             if self.mode == "coach":
                 self.log_write(f"[yellow]{verdict_line(decision)}[/yellow]")
@@ -1290,8 +1539,9 @@ class GameScreen(Screen):
         turn = self.game.turn
         if turn.rolls_left == 0:
             self.log_write(
-                f"Roll 3: [{' '.join(map(str, sorted(turn.dice)))}]. Pick a box."
+                f"Roll 3: ({' '.join(map(str, sorted(turn.dice)))}). Fill a box."
             )
+            self.human_card_widget().focus()
         if self.mode == "hints":
             self._show_hint()
 
@@ -1318,8 +1568,8 @@ class GameScreen(Screen):
     def _roll_clicked(self) -> None:
         self.action_roll()
 
-    @on(ScoreSheet.CategoryPicked)
-    def _category_picked(self, event: ScoreSheet.CategoryPicked) -> None:
+    @on(PlayerCard.CategoryPicked)
+    def _category_picked(self, event: PlayerCard.CategoryPicked) -> None:
         if not self.human_may_act():
             return
         turn = self.game.turn
@@ -1336,8 +1586,8 @@ class GameScreen(Screen):
     def action_focus_dice(self) -> None:
         self.query_one(DiceRow).focus()
 
-    def action_focus_sheet(self) -> None:
-        self.query_one(ScoreSheet).focus()
+    def action_focus_card(self) -> None:
+        self.human_card_widget().focus()
 
     def _show_hint(self) -> None:
         if not self.is_human_turn():
@@ -1349,14 +1599,16 @@ class GameScreen(Screen):
             return
         for line in hint_for(self.oracle, self.human.card, turn.counts(), turn.rolls_left):
             self.log_write(f"[yellow]* {line}[/yellow]")
-        if self.win_mode and turn.rolls_left > 0:
-            ctx = self._win_context()
+        # Standings-aware advice near the end of the game (the video's
+        # asterisk): always shown, AUTO follows it only with win mode on.
+        if turn.rolls_left > 0:
+            ctx = self._win_context(enabled=True)
             if ctx.active:
                 keep, note = winmode.choose_keep(
                     self.oracle, self.human.card, turn.counts(), turn.rolls_left, ctx
                 )
                 if note:
-                    self.log_write(f"[magenta]* {note}[/magenta]")
+                    self.log_write(f"[cyan]* {note}[/cyan]")
 
     def action_hint(self) -> None:
         self._show_hint()
@@ -1385,7 +1637,7 @@ class GameScreen(Screen):
         self.app.push_screen(TextPage("Help", HELP_TEXT))
 
     def action_review(self) -> None:
-        title = "Game review" if self.game.finished else "Review so far"
+        title = "Match review" if self.game.finished else "Review so far"
         self.app.push_screen(TextPage("Review", review_text(self.coach, title)))
 
     def action_new_game(self) -> None:
@@ -1457,7 +1709,7 @@ class GameScreen(Screen):
             save_settings(self.settings)
             state = "on" if self.win_mode else "off"
             self.log_write(
-                f"WIN mode [b]{state}[/b]: endgame play in hints/AUTO now "
+                f"WIN mode [b]{state}[/b]: endgame play in AUTO now "
                 f"{'targets win probability' if self.win_mode else 'maximizes points'}."
             )
             self.refresh_status()
@@ -1524,7 +1776,9 @@ class GameScreen(Screen):
         elif n is not None and len(diffs) == 1:
             diffs = diffs * n
         clear_saved_game()
-        config = GameConfig(difficulties=diffs, mode=self.mode, rules=rules)
+        config = GameConfig(
+            difficulties=diffs, mode=self.mode, rules=rules, n_games=self.n_games
+        )
         app = self.app
         assert isinstance(app, YahtzeeApp)
         app.start_game(config, replace=True)
@@ -1546,19 +1800,22 @@ class YahtzeeApp(App):
 
     /* Menu */
     #menu-center { align: center middle; height: 1fr; }
-    #menu-box { width: auto; height: auto; }
+    #menu-box { width: auto; height: auto; max-height: 100%; overflow-y: auto; }
     #menu-logo { width: auto; }
+    #menu-dice { width: auto; margin-top: 1; color: ansi_bright_black; }
     #menu-version { color: ansi_bright_black; margin-bottom: 1; }
     AsciiMenu { width: auto; height: auto; padding-left: 4; }
-    #menu-footer { color: ansi_bright_black; margin-top: 1; }
+    #menu-info { height: 2; margin-top: 1; padding-left: 4; }
+    #menu-footer { color: ansi_bright_black; }
 
     /* Game */
     #game-root { height: 1fr; }
     #statusbar { height: 1; }
     #game-columns { height: 1fr; }
-    #left-column { width: 1fr; min-width: 58; padding: 0 1; }
-    #dice-area { height: 8; margin-top: 1; }
-    DiceRow { width: 60; height: 8; layout: horizontal; }
+    #left-column { width: 1fr; min-width: 90; padding: 0 1; }
+    #dice-area { height: 10; }
+    DiceRow { width: 62; height: 10; layout: horizontal; border: blank; }
+    DiceRow.attention { border: ascii ansi_magenta; }
     .die { width: 12; height: 7; background: ansi_default; }
     #roll-column { width: 26; padding-top: 1; }
     #roll-action { height: 1; }
@@ -1571,7 +1828,13 @@ class YahtzeeApp(App):
         scrollbar-background-active: ansi_default; scrollbar-color-active: ansi_white;
     }
     #command { border: none; height: 1; padding: 0; background: ansi_default; }
-    ScoreSheet { width: auto; height: auto; margin: 1 1 0 0; }
+    #cards-row {
+        width: auto; padding: 0;
+        scrollbar-size-horizontal: 1;
+        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
+    }
+    PlayerCard { width: auto; height: auto; margin-right: 1; border: blank; }
+    PlayerCard.attention { border: ascii ansi_magenta; }
     #footer-keys { height: 1; color: ansi_bright_black; }
 
     /* Text pages */
@@ -1605,16 +1868,18 @@ class YahtzeeApp(App):
                 difficulties=self.initial["difficulties"],
                 rules=self.initial["rules"],
                 seed=self.initial.get("seed"),
+                n_games=int(self.initial.get("n_games", 1)),
                 mode=load_settings().get("mode", "normal"),
             )
             self.start_game(config)
         elif self.resume:
             snapshot = load_game_snapshot()
-            if snapshot:
+            if snapshot and not snapshot.get("finished"):
                 config = GameConfig(
                     difficulties=snapshot["config"]["difficulties"],
                     mode=snapshot["config"].get("mode", "normal"),
                     rules=snapshot["config"].get("rules", "official"),
+                    n_games=int(snapshot.get("n_games", 1)),
                 )
                 self.start_game(config, snapshot=snapshot)
         self._whats_new()
@@ -1629,12 +1894,7 @@ class YahtzeeApp(App):
         self.push_screen(GameScreen(config, snapshot=snapshot))
 
     def request_restart(self, resume: bool = False) -> None:
-        """Exit and relaunch into the (possibly just-updated) code.
-
-        The exec happens after app.run() returns, so the terminal is
-        restored cleanly first. With resume=True the saved game reopens
-        automatically.
-        """
+        """Exit and relaunch into the (possibly just-updated) code."""
         self._restart_args = ["--no-update"] + (["--resume"] if resume else [])
         self.exit()
 
@@ -1665,10 +1925,9 @@ class YahtzeeApp(App):
             )
 
     def _apply_background_update(self, result) -> None:
-        """A background update landed: apply it immediately when possible."""
+        """A background update landed mid-session: apply when possible."""
         in_game = any(isinstance(s, GameScreen) for s in self.screen_stack)
         if not in_game:
-            # Still on the menu: relaunch seamlessly into the new version.
             self.request_restart(resume=False)
             return
         self.notify(

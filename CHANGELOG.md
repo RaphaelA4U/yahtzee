@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.3.0
+
+- Matches: 1 to 6 games per match (set Games in the menu); every player
+  has their own card with a column per game and a running MATCH total,
+  like the classic paper pad.
+- True auto-update: the update is pulled and applied BEFORE the app
+  starts, so you always open the latest version.
+- Purple (Claude-style) selection color, the DOS Rebel logo with five
+  random dice, and explanations under every menu setting.
+- Clearer play: an accent border shows what to do (roll or fill), the
+  first open box is focused automatically, crossed-out boxes show x, and
+  the Bonus 63+ row shows how many points you still need.
+- WIN mode tuned in the new arena (tools/arena.py, 3000-match runs):
+  exact final-round win-probability play, now on by default; hints are
+  standings-aware near the end.
+- Finished matches can be reopened from the menu (View last game).
+
 ## v1.2.0
 
 - Claude-terminal restyle: your terminal's own colors (no more forced dark

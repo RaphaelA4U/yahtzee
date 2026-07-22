@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yahtzee-tui"
-version = "1.2.0"
+version = "1.3.0"
 description = "Yahtzee in je terminal: muis, toetsenbord en commando's, met bots en een optimale solver"
 requires-python = ">=3.10"
 dependencies = [
