@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.1
+
+- Updates now apply instantly: on the menu the app relaunches itself into
+  the new version automatically; mid-game, /restart or /update applies the
+  update and reopens your saved game right where you were.
+- New --resume flag to reopen the saved game from the shell.
+
 ## v1.1.0
 
 - Complete ASCII redesign: 3D dice with hover and an arrow-key cursor, and

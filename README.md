@@ -27,10 +27,11 @@ Requirements: `git` and `python3` 3.10+. The installer puts everything in
 ## Auto-update
 
 The app checks for updates in the background every time you open it and
-installs them silently; the new version runs the next time you start (or
-immediately via `/restart`). If an update fails, run `/update` inside the
-app or reopen it with an internet connection. Playing itself is fully
-offline.
+applies them instantly: on the menu it relaunches itself into the new
+version automatically; mid-game your game is saved and `/restart` (or
+`/update`) applies the update and drops you right back into your game.
+If an update fails, run `/update` inside the app or reopen it with an
+internet connection. Playing itself is fully offline.
 
 ## How to play
 

@@ -14,6 +14,9 @@ def main() -> None:
     parser.add_argument("-V", "--version", action="store_true", help="show the version")
     parser.add_argument("--no-update", action="store_true", help="skip the update check")
     parser.add_argument(
+        "--resume", action="store_true", help="reopen the saved game right away"
+    )
+    parser.add_argument(
         "--build-tables", action="store_true", help="rebuild the solver tables"
     )
     parser.add_argument(
@@ -71,7 +74,7 @@ def main() -> None:
 
     from .ui.app import run
 
-    run(no_update=args.no_update, initial=initial)
+    run(no_update=args.no_update, initial=initial, resume=args.resume)
 
 
 if __name__ == "__main__":

@@ -55,7 +55,7 @@ from ..game import (
     Scorecard,
 )
 from ..hints import hint_for
-from ..update import REPO_DIR, check_and_update, current_version, restart
+from ..update import REPO_DIR, check_and_update, current_version
 from .. import winmode
 
 MODES = ["normal", "hints", "coach", "auto"]
@@ -1365,7 +1365,9 @@ class GameScreen(Screen):
             app.manual_update(self)
         elif cmd == "restart":
             self.checkpoint()
-            restart()
+            app = self.app
+            assert isinstance(app, YahtzeeApp)
+            app.request_restart(resume=not self.game.finished)
         elif cmd == "version":
             self.log_write(f"Yahtzee v{current_version()}")
         elif cmd == "menu":
@@ -1471,10 +1473,17 @@ class YahtzeeApp(App):
     #help-close, #review-close { margin-top: 1; }
     """
 
-    def __init__(self, no_update: bool = False, initial: dict | None = None) -> None:
+    def __init__(
+        self,
+        no_update: bool = False,
+        initial: dict | None = None,
+        resume: bool = False,
+    ) -> None:
         super().__init__()
         self.no_update = no_update
         self.initial = initial
+        self.resume = resume
+        self._restart_args: list[str] | None = None
 
     def on_mount(self) -> None:
         self.push_screen(MenuScreen())
@@ -1486,9 +1495,28 @@ class YahtzeeApp(App):
                 mode=load_settings().get("mode", "normal"),
             )
             self.start_game(config)
+        elif self.resume:
+            snapshot = load_game_snapshot()
+            if snapshot:
+                config = GameConfig(
+                    difficulties=snapshot["config"]["difficulties"],
+                    mode=snapshot["config"].get("mode", "normal"),
+                    rules=snapshot["config"].get("rules", "official"),
+                )
+                self.start_game(config, snapshot=snapshot)
         self._whats_new()
         if not self.no_update:
             self._update_check()
+
+    def request_restart(self, resume: bool = False) -> None:
+        """Exit and relaunch into the (possibly just-updated) code.
+
+        The exec happens after app.run() returns, so the terminal is
+        restored cleanly first. With resume=True the saved game reopens
+        automatically.
+        """
+        self._restart_args = ["--no-update"] + (["--resume"] if resume else [])
+        self.exit()
 
     def start_game(
         self, config: GameConfig, replace: bool = False, snapshot: dict | None = None
@@ -1517,11 +1545,25 @@ class YahtzeeApp(App):
     def _update_check(self) -> None:
         result = check_and_update()
         if result.status == "updated":
-            self.call_from_thread(self.notify, result.message, title="Update", timeout=10)
+            self.call_from_thread(self._apply_background_update, result)
         elif result.status == "failed":
             self.call_from_thread(
                 self.notify, result.message, title="Update", severity="warning", timeout=10
             )
+
+    def _apply_background_update(self, result) -> None:
+        """A background update landed: apply it immediately when possible."""
+        in_game = any(isinstance(s, GameScreen) for s in self.screen_stack)
+        if not in_game:
+            # Still on the menu: relaunch seamlessly into the new version.
+            self.request_restart(resume=False)
+            return
+        self.notify(
+            f"Update installed: v{result.new_version or '?'}. "
+            f"Type /restart to apply now (your game is saved).",
+            title="Update",
+            timeout=10,
+        )
 
     def manual_update(self, screen: GameScreen) -> None:
         self._manual_update(screen)
@@ -1529,10 +1571,19 @@ class YahtzeeApp(App):
     @work(thread=True, exclusive=True, group="update")
     def _manual_update(self, screen: GameScreen) -> None:
         result = check_and_update()
-        color = {"updated": "green", "uptodate": "cyan", "failed": "red"}.get(
-            result.status, "white"
-        )
+        if result.status == "updated":
+            self.call_from_thread(self._apply_manual_update, screen, result)
+            return
+        color = {"uptodate": "cyan", "failed": "red"}.get(result.status, "white")
         self.call_from_thread(screen.log_write, f"[{color}]{result.message}[/{color}]")
+
+    def _apply_manual_update(self, screen: GameScreen, result) -> None:
+        screen.log_write(
+            f"[green]Update installed: v{result.new_version or '?'}. "
+            f"Restarting...[/green]"
+        )
+        screen.checkpoint()
+        self.request_restart(resume=not screen.game.finished)
 
 
 def _changelog_summary(version: str, max_lines: int = 6) -> str | None:
@@ -1557,5 +1608,15 @@ def _changelog_summary(version: str, max_lines: int = 6) -> str | None:
     return "\n".join(out) if out else None
 
 
-def run(no_update: bool = False, initial: dict | None = None) -> None:
-    YahtzeeApp(no_update=no_update, initial=initial).run()
+def run(no_update: bool = False, initial: dict | None = None, resume: bool = False) -> None:
+    import os
+    import sys
+
+    app = YahtzeeApp(no_update=no_update, initial=initial, resume=resume)
+    app.run()
+    if app._restart_args is not None:
+        # Terminal state is restored at this point; swap in the new code.
+        os.execv(
+            sys.executable,
+            [sys.executable, "-m", "yahtzee_app", *app._restart_args],
+        )

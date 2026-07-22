@@ -83,8 +83,7 @@ def check_and_update() -> UpdateResult:
         version = _head_version() or "?"
         return UpdateResult(
             "updated",
-            f"Update installed: v{version}. Restart the app (or type /restart) "
-            f"to use the new version.",
+            f"Update installed: v{version}.",
             new_version=version,
         )
     except subprocess.TimeoutExpired:
@@ -100,8 +99,3 @@ def _reinstall_deps() -> None:
         capture_output=True,
         timeout=300,
     )
-
-
-def restart() -> None:
-    """Replace this process with a fresh start (new code)."""
-    os.execv(sys.executable, [sys.executable, "-m", "yahtzee_app", "--no-update"])

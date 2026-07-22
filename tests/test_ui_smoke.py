@@ -122,6 +122,36 @@ async def test_mode_cycle_and_commands():
         screen.handle_command("/win off")
 
 
+@pytest.mark.asyncio
+async def test_restart_command_saves_and_requests_restart():
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        app.start_game(GameConfig(difficulties=["easy"], mode="normal"))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, GameScreen)
+        screen.handle_command("/restart")
+    assert app._restart_args == ["--no-update", "--resume"]
+
+    import yahtzee_app.config as cfg
+
+    assert cfg.load_game_snapshot() is not None
+
+
+@pytest.mark.asyncio
+async def test_resume_reopens_saved_game():
+    import yahtzee_app.config as cfg
+
+    config = GameConfig(difficulties=["easy"], mode="normal")
+    source = GameScreen(config)
+    cfg.save_game_snapshot(source._snapshot())
+    app = YahtzeeApp(no_update=True, resume=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, GameScreen)
+        assert app.screen.human.card.boxes == source.human.card.boxes
+
+
 def test_snapshot_roundtrip():
     """Save-game snapshots restore the exact game state."""
     config = GameConfig(difficulties=["easy"], mode="normal")
