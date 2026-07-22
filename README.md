@@ -1,10 +1,11 @@
 # Yahtzee TUI
 
-Yahtzee in your terminal, ASCII table-top style: 3D dice with hover and a
-cursor, and a paper scorecard per player, like the real game on the table.
-Fully playable with **mouse**, **keyboard**, and **slash commands**, against
-bots ranging from clueless to mathematically perfect. The solver, hints, and
-bot levels are based on the video
+Yahtzee in your terminal, Claude-terminal style: your terminal's own colors,
+everything in ASCII, no buttons and no dialogs. 3D dice with hover and an
+arrow cursor, and the classic score sheet on the table: real cells, one
+column per player. Fully playable with **mouse**, **keyboard**, and **slash
+commands**, against bots ranging from clueless to mathematically perfect.
+The solver, hints, and bot levels are based on the video
 [*I Solved Yahtzee**](https://www.youtube.com/watch?v=DOgb5wrb7mM) by
 Ballpark Figures (Patrick Liscio): dynamic programming over every scorecard
 state, for an expected score of ~254.6.
@@ -43,8 +44,8 @@ your card to score) and with the keyboard:
 | `r` / `space` | roll |
 | `1` to `5` | hold / release a die |
 | `left`/`right` | move the die cursor |
-| `up`/`down` + `enter` | pick and score a box on your card |
-| `tab` | switch focus: dice, your card, command bar |
+| `up`/`down` + `enter` | pick and fill a box on the score sheet |
+| `tab` | switch focus: dice, score sheet, command bar |
 | `h` | hint from the optimal solver |
 | `shift+tab` | switch mode: NORMAL, HINTS, COACH, AUTO |
 | `/` | open the command bar |

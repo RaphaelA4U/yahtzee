@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.2.0
+
+- Claude-terminal restyle: your terminal's own colors (no more forced dark
+  background), everything drawn in ASCII.
+- No more buttons or dialogs: the menu is arrow-navigable text (left/right
+  adjusts settings), help/stats/review are full pages, game over happens
+  inline, and quitting never asks (the game is always saved).
+- The score sheet is now one classic sheet on the table: real cells, a
+  column per player, with hover and an arrow cursor in your column.
+- Arrow keys and mouse hover now work everywhere.
+
 ## v1.1.1
 
 - Updates now apply instantly: on the menu the app relaunches itself into

@@ -1,4 +1,4 @@
-"""Smoke tests: boot the TUI, start a game, roll, hold, score, switch modes.
+"""Smoke tests: boot the TUI, navigate the menu, play, switch modes.
 
 Uses Textual's Pilot to drive the real app headlessly. Catches runtime
 errors in screens, widgets, bindings, and the turn loop.
@@ -8,19 +8,61 @@ import pytest
 
 from yahtzee_app.ui.app import (
     AsciiDie,
+    AsciiMenu,
     DiceRow,
     GameConfig,
     GameScreen,
     MenuScreen,
-    PlayerCard,
+    ScoreSheet,
+    TextPage,
     YahtzeeApp,
 )
 
 
 @pytest.mark.asyncio
-async def test_menu_boots():
+async def test_menu_boots_and_arrows_start_game():
+    """The menu is arrow-navigable: enter on 'New game' starts a game."""
     app = YahtzeeApp(no_update=True)
     async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, MenuScreen)
+        menu = app.screen.query_one(AsciiMenu)
+        assert menu.has_focus
+        # No saved game: first visible item is "New game".
+        assert menu.visible_items()[0].id == "new"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, GameScreen)
+
+
+@pytest.mark.asyncio
+async def test_menu_choice_items_adjust_with_arrows():
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        menu = app.screen.query_one(AsciiMenu)
+        bots_item = menu.item("bots")
+        before = bots_item.value
+        # Move to the "Opponents" row and adjust it.
+        vis = menu.visible_items()
+        menu.selected = vis.index(bots_item)
+        await pilot.press("right")
+        await pilot.pause()
+        assert bots_item.value != before
+
+
+@pytest.mark.asyncio
+async def test_menu_help_is_a_page_not_a_dialog():
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        menu = app.screen.query_one(AsciiMenu)
+        vis = menu.visible_items()
+        menu.selected = vis.index(menu.item("help"))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, TextPage)
+        await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, MenuScreen)
 
@@ -57,23 +99,22 @@ async def test_full_human_turn_flow():
         await pilot.press("1")
         await pilot.pause()
         assert screen.game.turn.held[0]
-        await pilot.press("space")  # dice row is focused: space toggles hold
+        await pilot.press("space")  # dice row focused: space toggles hold
         await pilot.pause()
         assert not screen.game.turn.held[0]
         await pilot.press("r")
         await pilot.pause(0.3)
         assert screen.game.turn.rolls_used == 2
-        # Score Chance (cat 12) directly through the card message flow.
         chance_option = screen.human.card.score_option(12, screen.game.turn.counts())
         screen._score(screen.human, chance_option, prefix="You")
         await pilot.pause()
         assert screen.human.card.boxes[12] is not None
-        # A keep and a score decision were graded by the coach.
         assert len(screen.coach.decisions) >= 1
 
 
 @pytest.mark.asyncio
-async def test_card_cursor_and_pick():
+async def test_sheet_cursor_and_pick():
+    """Arrows move over the score sheet; enter fills the selected box."""
     app = YahtzeeApp(no_update=True)
     async with app.run_test(size=(140, 45)) as pilot:
         app.start_game(GameConfig(difficulties=["easy"], mode="normal"))
@@ -81,17 +122,23 @@ async def test_card_cursor_and_pick():
         screen = app.screen
         await pilot.press("r")
         await pilot.pause(0.3)
-        card = screen.query(PlayerCard).first()
-        card.focus()
-        await pilot.pause()
-        assert card.cursor_cat is not None
-        before = card.cursor_cat
+        # Up/down from the dice row moves focus to the sheet.
         await pilot.press("down")
         await pilot.pause()
-        assert card.cursor_cat != before
+        sheet = screen.query_one(ScoreSheet)
+        assert sheet.has_focus
+        assert sheet.cursor_cat is not None
+        before = sheet.cursor_cat
+        await pilot.press("down")
+        await pilot.pause()
+        assert sheet.cursor_cat != before
         await pilot.press("enter")
         await pilot.pause()
-        assert screen.human.card.boxes.count(None) == 12  # one box scored
+        assert screen.human.card.boxes.count(None) == 12
+        # Left/right moves focus back to the dice.
+        await pilot.press("left")
+        await pilot.pause()
+        assert screen.query_one(DiceRow).has_focus
 
 
 @pytest.mark.asyncio
@@ -120,6 +167,22 @@ async def test_mode_cycle_and_commands():
         assert screen.win_mode is True
         assert screen.settings["speed"] == "instant"
         screen.handle_command("/win off")
+
+
+@pytest.mark.asyncio
+async def test_escape_saves_and_returns_to_menu_without_dialog():
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        app.start_game(GameConfig(difficulties=["easy"], mode="normal"))
+        await pilot.pause()
+        assert isinstance(app.screen, GameScreen)
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, MenuScreen)
+
+    import yahtzee_app.config as cfg
+
+    assert cfg.load_game_snapshot() is not None
 
 
 @pytest.mark.asyncio

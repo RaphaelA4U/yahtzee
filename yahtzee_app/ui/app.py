@@ -1,30 +1,36 @@
-"""The Yahtzee TUI: ASCII table-top style, fully playable with mouse,
-keyboard, and commands.
+"""The Yahtzee TUI, Claude-terminal style.
 
-Design: everything that can be ASCII is ASCII. Dice are drawn as 3D dice
-with a drop shadow, every player has their own paper-style scorecard, and
-custom styling is kept to a minimum (colors and hover states only).
+Design rules:
+- The terminal's own colors: default background and foreground everywhere.
+- Everything is text and ASCII. No buttons, no dialogs, no popups: menus
+  are arrow-navigable text, confirmations do not exist (games auto-save),
+  and help/stats/review are full pages you enter and leave with escape.
+- Arrow keys work everywhere; the mouse works everywhere (hover highlights,
+  click activates).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import random
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.text import Text
-from textual import on, work
+from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Center, Container, Horizontal, HorizontalScroll, Vertical
+from textual.containers import Center, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.reactive import reactive
-from textual.screen import ModalScreen, Screen
+from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Button, Input, Label, RichLog, Select, Static, Switch
+from textual.widgets import Input, RichLog, Static
 
 from .. import __version__
+from .. import winmode
 from ..bots import (
     BOT_NAMES,
     DIFFICULTIES,
@@ -56,14 +62,14 @@ from ..game import (
 )
 from ..hints import hint_for
 from ..update import REPO_DIR, check_and_update, current_version
-from .. import winmode
 
 MODES = ["normal", "hints", "coach", "auto"]
 MODE_LABELS = {"normal": "NORMAL", "hints": "HINTS", "coach": "COACH", "auto": "AUTO"}
 
 HUMAN_NAME = "You"
+ACCENT = "yellow"
 
-CARD_LABELS = [
+SHEET_LABELS = [
     "Ones", "Twos", "Threes", "Fours", "Fives", "Sixes",
     "3 of a Kind", "4 of a Kind", "Full House", "Sm Straight", "Lg Straight",
     "YAHTZEE", "Chance",
@@ -114,12 +120,13 @@ def build_players(config: GameConfig) -> list[Player]:
 
 
 class AsciiDie(Static):
-    """A 3D ASCII die with a drop shadow. Click to hold."""
+    """A 3D ASCII die with a drop shadow. Click to hold, hover to highlight."""
 
     value: reactive[int] = reactive(1)
     held: reactive[bool] = reactive(False)
     blank: reactive[bool] = reactive(True)
     cursor: reactive[bool] = reactive(False)
+    hovered: reactive[bool] = reactive(False)
 
     class Pressed(Message):
         def __init__(self, index: int) -> None:
@@ -140,40 +147,54 @@ class AsciiDie(Static):
         self.index = index
 
     def render(self) -> Text:
-        if self.blank:
-            rows = ["       ", "   ?   ", "       "]
+        rows = ["       ", "   ?   ", "       "] if self.blank else self.PIPS[self.value]
+        if self.held:
+            face = f"bold {ACCENT}"
+        elif self.cursor or self.hovered:
+            face = "bold"
+        elif self.blank:
+            face = "dim"
         else:
-            rows = self.PIPS[self.value]
-        face_style = "bold yellow" if self.held else ("dim" if self.blank else "")
+            face = ""
         art = Text()
-        art.append(".-------.  \n", style=face_style)
+        art.append(".-------.  \n", style=face)
         for i, row in enumerate(rows):
             shadow = "\\ " if i == 0 else " |"
-            art.append(f"|{row}|", style=face_style)
+            art.append(f"|{row}|", style=face)
             art.append(f"{shadow}\n", style="dim")
-        art.append("'-------'", style=face_style)
+        art.append("'-------'", style=face)
         art.append(" |\n", style="dim")
         art.append(" \\________\\|\n", style="dim")
         if self.held:
             label = f">[{self.index + 1}] HELD" if self.cursor else f" [{self.index + 1}] HELD"
-            art.append(label.center(11), style="bold yellow")
+            art.append(label.center(11), style=f"bold {ACCENT}")
         elif self.cursor:
             art.append(f">({self.index + 1})<".center(11), style="bold")
         else:
-            art.append(f"({self.index + 1})".center(11), style="dim")
+            style = "bold" if self.hovered else "dim"
+            art.append(f"({self.index + 1})".center(11), style=style)
         return art
 
-    def watch_value(self, _: int) -> None:
+    def watch_value(self, _) -> None:
         self.refresh()
 
-    def watch_held(self, _: bool) -> None:
+    def watch_held(self, _) -> None:
         self.refresh()
 
-    def watch_blank(self, _: bool) -> None:
+    def watch_blank(self, _) -> None:
         self.refresh()
 
-    def watch_cursor(self, _: bool) -> None:
+    def watch_cursor(self, _) -> None:
         self.refresh()
+
+    def watch_hovered(self, _) -> None:
+        self.refresh()
+
+    def on_enter(self) -> None:
+        self.hovered = True
+
+    def on_leave(self) -> None:
+        self.hovered = False
 
     def on_click(self) -> None:
         self.post_message(self.Pressed(self.index))
@@ -219,56 +240,56 @@ class DiceRow(Widget, can_focus=True):
         self.show_cursor(False)
 
 
-class RollButton(Static):
-    """ASCII roll button."""
+class RollAction(Static):
+    """The roll action as plain text: hover or focus highlights it."""
 
     enabled: reactive[bool] = reactive(True)
     rolls_left: reactive[int] = reactive(3)
+    hovered: reactive[bool] = reactive(False)
+
+    class Rolled(Message):
+        pass
 
     def render(self) -> Text:
         if not self.enabled:
-            return Text("[ .  .  . ]", style="dim")
+            return Text("  roll (r)", style="dim")
+        style = f"bold {ACCENT}" if self.hovered else "bold"
         return Text.assemble(
-            ("[ ROLL (r) ]", "bold reverse yellow"),
-            (f"  {self.rolls_left} left", "dim"),
+            ("> Roll (r)", style),
+            (f"   {self.rolls_left} left", "dim"),
         )
 
-    def watch_enabled(self, _: bool) -> None:
+    def watch_enabled(self, _) -> None:
         self.refresh()
 
-    def watch_rolls_left(self, _: int) -> None:
+    def watch_rolls_left(self, _) -> None:
         self.refresh()
+
+    def watch_hovered(self, _) -> None:
+        self.refresh()
+
+    def on_enter(self) -> None:
+        self.hovered = True
+
+    def on_leave(self) -> None:
+        self.hovered = False
 
     def on_click(self) -> None:
         if self.enabled:
             self.post_message(self.Rolled())
 
-    class Rolled(Message):
-        pass
-
 
 # ---------------------------------------------------------------------------
-# Paper scorecards
+# The score sheet: one table, real cells, a column per player
 # ---------------------------------------------------------------------------
 
-CARD_WIDTH = 22
-CARD_INNER = CARD_WIDTH - 2  # between the pipes
 
+class ScoreSheet(Widget, can_focus=True):
+    """The classic score sheet on the table: category rows, player columns.
 
-class PlayerCard(Widget):
-    """One player's scorecard, drawn like the paper card on the table.
-
-    Rows (0-based line numbers):
-      0        top border with the name
-      1-6      upper section (cats 0-5)
-      7        Sum
-      8        Bonus 63+
-      9        divider
-      10-16    lower section (cats 6-12)
-      17       Yahtzee bonus
-      18       divider
-      19       TOTAL
-      20       bottom border
+    Your column is interactive: arrows move over the open boxes, enter (or a
+    click) fills the selected box. Cyan numbers preview what the current
+    dice would score; 'x' means the joker rules forbid that box right now.
     """
 
     BINDINGS = [
@@ -277,8 +298,7 @@ class PlayerCard(Widget):
         Binding("space,enter", "pick", "Score", show=False),
     ]
 
-    LINE_TO_CAT = {**{i + 1: i for i in range(6)}, **{i + 4: i for i in range(6, 13)}}
-    CAT_TO_LINE = {v: k for k, v in LINE_TO_CAT.items()}
+    LABEL_W = 17
 
     class CategoryPicked(Message):
         def __init__(self, category: int) -> None:
@@ -286,21 +306,24 @@ class PlayerCard(Widget):
             super().__init__()
 
     cursor_cat: reactive[int | None] = reactive(None)
+    hovered_cat: reactive[int | None] = reactive(None)
 
-    def __init__(self, player: Player, interactive: bool) -> None:
-        super().__init__(classes="playercard")
-        self.player = player
-        self.interactive = interactive
-        self.can_focus = interactive
-        self.is_turn = False
+    def __init__(self, players: list[Player]) -> None:
+        super().__init__(id="scoresheet")
+        self.players = players
+        self.current: Player | None = None
         self.preview: dict[int, str] = {}
+        self.col_w = [max(5, min(9, len(p.name) + 2)) for p in players]
+        # line number -> category
+        self.line_to_cat = {**{i + 3: i for i in range(6)}, **{i + 7: i for i in range(6, 13)}}
+        self.cat_to_line = {v: k for k, v in self.line_to_cat.items()}
 
     # -- data --------------------------------------------------------------
 
-    def set_state(self, is_turn: bool, preview: dict[int, str]) -> None:
-        self.is_turn = is_turn
+    def set_state(self, current: Player | None, preview: dict[int, str]) -> None:
+        self.current = current
         self.preview = preview
-        if not self.interactive or not preview:
+        if not preview:
             self.cursor_cat = None
         elif self.cursor_cat not in preview:
             self.cursor_cat = next(iter(sorted(preview)), None)
@@ -308,71 +331,117 @@ class PlayerCard(Widget):
 
     # -- rendering ---------------------------------------------------------
 
-    def _row(self, label: str, value: Text, cursor: bool = False) -> Text:
-        text = Text()
-        marker = ">" if cursor else " "
-        text.append("|", style="dim")
-        text.append(marker, style="bold yellow" if cursor else "dim")
-        body = Text(f"{label:<12}", style="" if cursor else "dim")
-        text.append_text(body)
-        value.align("right", 6)
-        text.append_text(value)
-        text.append(" |", style="dim")
-        text.append("\n")
-        if cursor:
-            text.stylize("reverse", len("|"), len(text) - 2)
-        return text
+    def _sep(self) -> Text:
+        line = "+" + "-" * self.LABEL_W + "+" + "+".join("-" * w for w in self.col_w) + "+"
+        return Text(line + "\n", style="dim")
+
+    def _cells_row(self, label: Text, cells: list[Text]) -> Text:
+        out = Text()
+        out.append("|", style="dim")
+        label.truncate(self.LABEL_W - 1)
+        label.pad_right(self.LABEL_W - 1 - len(label.plain))
+        out.append(" ")
+        out.append_text(label)
+        out.append("|", style="dim")
+        for w, cell in zip(self.col_w, cells):
+            cell.truncate(w - 2)
+            cell.align("right", w - 2)
+            out.append(" ")
+            out.append_text(cell)
+            out.append(" ")
+            out.append("|", style="dim")
+        out.append("\n")
+        return out
 
     def render(self) -> Text:
-        card = self.player.card
-        name = self.player.name
-        if self.player.difficulty:
-            name += f" ({self.player.difficulty})"
-        head_style = "bold yellow" if self.is_turn else "bold"
         out = Text()
-        dashes = CARD_WIDTH - 5 - len(name)
-        out.append(".-- ", style="dim")
-        out.append(name[: CARD_INNER - 4], style=head_style)
-        out.append(" " + "-" * max(0, dashes - 1) + ".", style="dim")
-        out.append("\n")
+        out.append_text(self._sep())
+        header_cells = []
+        for p in self.players:
+            style = f"bold {ACCENT}" if p is self.current else "bold"
+            header_cells.append(Text(p.name, style=style))
+        out.append_text(self._cells_row(Text(""), header_cells))
+        out.append_text(self._sep())
 
-        def value_of(cat: int) -> Text:
+        def value_cell(p: Player, cat: int) -> Text:
+            card = p.card
             val = card.boxes[cat]
+            is_you = not p.is_bot
             if val is not None:
                 return Text(str(val), style="bold")
-            if cat in self.preview:
-                return Text(self.preview[cat], style="cyan")
-            if self.preview:
-                return Text("x", style="dim red")
+            if is_you and cat in self.preview:
+                style = "cyan"
+                if cat == self.cursor_cat:
+                    style = "reverse cyan"
+                elif cat == self.hovered_cat:
+                    style = "bold cyan underline"
+                return Text(self.preview[cat], style=style)
+            if is_you and self.preview:
+                return Text("x", style="dim")
             return Text(".", style="dim")
+
+        def label_cell(cat: int) -> Text:
+            style = ""
+            if cat == self.cursor_cat:
+                style = f"bold {ACCENT}"
+            elif cat == self.hovered_cat and self.preview:
+                style = "bold"
+            marker = ">" if cat == self.cursor_cat else " "
+            t = Text()
+            t.append(marker, style=f"bold {ACCENT}" if cat == self.cursor_cat else "")
+            t.append(SHEET_LABELS[cat], style=style)
+            return t
 
         for cat in range(6):
             out.append_text(
-                self._row(CARD_LABELS[cat], value_of(cat), cursor=cat == self.cursor_cat)
+                self._cells_row(label_cell(cat), [value_cell(p, cat) for p in self.players])
             )
-        out.append_text(self._row("Sum", Text(str(card.upper_subtotal()), style="dim")))
-        bonus = card.upper_bonus()
+        out.append_text(self._sep())
         out.append_text(
-            self._row(
-                "Bonus 63+",
-                Text(str(bonus) if bonus else "-", style="green" if bonus else "dim"),
+            self._cells_row(
+                Text(" Sum", style="dim"),
+                [Text(str(p.card.upper_subtotal()), style="dim") for p in self.players],
             )
         )
-        out.append("|" + "-" * CARD_INNER + "|\n", style="dim")
+        out.append_text(
+            self._cells_row(
+                Text(" Bonus (63+)", style="dim"),
+                [
+                    Text(
+                        str(p.card.upper_bonus()) if p.card.upper_bonus() else "-",
+                        style="green" if p.card.upper_bonus() else "dim",
+                    )
+                    for p in self.players
+                ],
+            )
+        )
+        out.append_text(self._sep())
         for cat in range(6, N_CATEGORIES):
             out.append_text(
-                self._row(CARD_LABELS[cat], value_of(cat), cursor=cat == self.cursor_cat)
+                self._cells_row(label_cell(cat), [value_cell(p, cat) for p in self.players])
             )
-        yb = card.yahtzee_bonus_count * 100
         out.append_text(
-            self._row(
-                "Y. bonus",
-                Text(str(yb) if yb else "-", style="magenta" if yb else "dim"),
+            self._cells_row(
+                Text(" Yahtzee bonus", style="dim"),
+                [
+                    Text(
+                        str(p.card.yahtzee_bonus_count * 100)
+                        if p.card.yahtzee_bonus_count
+                        else "-",
+                        style="magenta" if p.card.yahtzee_bonus_count else "dim",
+                    )
+                    for p in self.players
+                ],
             )
         )
-        out.append("|" + "=" * CARD_INNER + "|\n", style="dim")
-        out.append_text(self._row("TOTAL", Text(str(card.total()), style="bold yellow")))
-        out.append("'" + "-" * CARD_INNER + "'", style="dim")
+        out.append_text(self._sep())
+        out.append_text(
+            self._cells_row(
+                Text(" TOTAL", style="bold"),
+                [Text(str(p.card.total()), style=f"bold {ACCENT}") for p in self.players],
+            )
+        )
+        out.append_text(self._sep())
         return out
 
     # -- interaction -------------------------------------------------------
@@ -393,59 +462,203 @@ class PlayerCard(Widget):
         if self.cursor_cat not in cats:
             self.cursor_cat = cats[0]
         else:
-            idx = (cats.index(self.cursor_cat) + step) % len(cats)
-            self.cursor_cat = cats[idx]
-        self.refresh()
+            self.cursor_cat = cats[(cats.index(self.cursor_cat) + step) % len(cats)]
 
     def action_pick(self) -> None:
         if self.cursor_cat is not None:
             self.post_message(self.CategoryPicked(self.cursor_cat))
 
-    def on_click(self, event) -> None:
-        if not self.interactive:
+    def _cat_at(self, y: int) -> int | None:
+        return self.line_to_cat.get(y)
+
+    def on_click(self, event: events.Click) -> None:
+        cat = self._cat_at(event.y)
+        if cat is None or cat not in self.preview:
             return
-        cat = self.LINE_TO_CAT.get(event.y)
-        if cat is None:
-            return
-        if cat in self.preview:
-            self.cursor_cat = cat
-            self.refresh()
-            self.post_message(self.CategoryPicked(cat))
+        self.focus()
+        self.cursor_cat = cat
+        self.post_message(self.CategoryPicked(cat))
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        self.hovered_cat = self._cat_at(event.y)
+
+    def on_leave(self) -> None:
+        self.hovered_cat = None
 
     def watch_cursor_cat(self, _) -> None:
         self.refresh()
 
+    def watch_hovered_cat(self, _) -> None:
+        self.refresh()
+
 
 # ---------------------------------------------------------------------------
-# Modals
+# Arrow-navigable ASCII menu (no buttons, no widgets)
 # ---------------------------------------------------------------------------
 
 
-class ConfirmScreen(ModalScreen[bool]):
-    """Simple yes/no question."""
+@dataclass
+class MenuItem:
+    id: str
+    label: str
+    kind: str = "action"                      # "action" | "choice"
+    choices: list[tuple[str, object]] = field(default_factory=list)
+    index: int = 0
+    visible: bool = True
+
+    @property
+    def value(self):
+        return self.choices[self.index][1] if self.choices else None
+
+    @property
+    def value_label(self) -> str:
+        return self.choices[self.index][0] if self.choices else ""
+
+
+class AsciiMenu(Widget, can_focus=True):
+    """A Claude-terminal style menu: text lines, arrows, hover, click."""
 
     BINDINGS = [
-        Binding("escape,n", "answer(False)", "No"),
-        Binding("enter,y", "answer(True)", "Yes", priority=True),
+        Binding("up", "move(-1)", "Up", show=False),
+        Binding("down", "move(1)", "Down", show=False),
+        Binding("left", "adjust(-1)", "Left", show=False),
+        Binding("right", "adjust(1)", "Right", show=False),
+        Binding("space,enter", "activate", "Select", show=False),
     ]
 
-    def __init__(self, question: str) -> None:
+    selected: reactive[int] = reactive(0)
+    hovered: reactive[int | None] = reactive(None)
+
+    class Activated(Message):
+        def __init__(self, item_id: str) -> None:
+            self.item_id = item_id
+            super().__init__()
+
+    class Changed(Message):
+        def __init__(self, item_id: str, value) -> None:
+            self.item_id = item_id
+            self.value = value
+            super().__init__()
+
+    def __init__(self, items: list[MenuItem], id: str | None = None) -> None:
+        super().__init__(id=id)
+        self.items = items
+
+    def visible_items(self) -> list[MenuItem]:
+        return [i for i in self.items if i.visible]
+
+    def item(self, item_id: str) -> MenuItem:
+        return next(i for i in self.items if i.id == item_id)
+
+    def set_visible(self, item_id: str, visible: bool) -> None:
+        self.item(item_id).visible = visible
+        vis = self.visible_items()
+        self.selected = min(self.selected, len(vis) - 1)
+        self.refresh()
+
+    def render(self) -> Text:
+        out = Text()
+        for idx, item in enumerate(self.visible_items()):
+            selected = idx == self.selected and self.has_focus
+            hovered = idx == self.hovered
+            prefix = "> " if selected else "  "
+            if selected:
+                style = f"bold {ACCENT}"
+            elif hovered:
+                style = "bold"
+            else:
+                style = ""
+            out.append(prefix, style=f"bold {ACCENT}" if selected else "")
+            if item.kind == "choice":
+                out.append(f"{item.label:<12}", style=style)
+                out.append("< ", style="dim")
+                out.append(item.value_label, style=style if selected or hovered else "")
+                out.append(" >", style="dim")
+            else:
+                out.append(item.label, style=style)
+            out.append("\n")
+        return out
+
+    def action_move(self, step: int) -> None:
+        vis = self.visible_items()
+        if vis:
+            self.selected = (self.selected + step) % len(vis)
+
+    def action_adjust(self, step: int) -> None:
+        vis = self.visible_items()
+        if not vis:
+            return
+        item = vis[self.selected]
+        if item.kind == "choice" and item.choices:
+            item.index = (item.index + step) % len(item.choices)
+            self.refresh()
+            self.post_message(self.Changed(item.id, item.value))
+
+    def action_activate(self) -> None:
+        vis = self.visible_items()
+        if not vis:
+            return
+        item = vis[self.selected]
+        if item.kind == "choice":
+            self.action_adjust(1)
+        else:
+            self.post_message(self.Activated(item.id))
+
+    def on_click(self, event: events.Click) -> None:
+        vis = self.visible_items()
+        if 0 <= event.y < len(vis):
+            self.focus()
+            self.selected = event.y
+            self.action_activate()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        vis = self.visible_items()
+        self.hovered = event.y if 0 <= event.y < len(vis) else None
+
+    def on_leave(self) -> None:
+        self.hovered = None
+
+    def watch_selected(self, _) -> None:
+        self.refresh()
+
+    def watch_hovered(self, _) -> None:
+        self.refresh()
+
+    def on_focus(self) -> None:
+        self.refresh()
+
+    def on_blur(self) -> None:
+        self.refresh()
+
+
+# ---------------------------------------------------------------------------
+# Full-screen text pages (help, stats, review): no dialogs
+# ---------------------------------------------------------------------------
+
+
+class TextPage(Screen):
+    """A scrollable full-screen text page. Escape (or q) goes back."""
+
+    BINDINGS = [
+        Binding("escape,q,backspace", "go_back", "Back"),
+    ]
+
+    def __init__(self, title: str, body: str) -> None:
         super().__init__()
-        self.question = question
+        self.title_text = title
+        self.body = body
 
     def compose(self) -> ComposeResult:
-        with Container(id="confirm-box"):
-            yield Label(self.question, id="confirm-question")
-            with Horizontal(id="confirm-buttons"):
-                yield Button("Yes", variant="primary", id="yes")
-                yield Button("No", id="no")
+        yield Static(f" {self.title_text}", id="page-title", markup=True)
+        with VerticalScroll(id="page-scroll"):
+            yield Static(self.body, id="page-body", markup=True)
+        yield Static(" up/down scroll   esc back", id="page-footer")
 
-    @on(Button.Pressed)
-    def _button(self, event: Button.Pressed) -> None:
-        self.dismiss(event.button.id == "yes")
+    def on_mount(self) -> None:
+        self.query_one("#page-scroll", VerticalScroll).focus()
 
-    def action_answer(self, answer: bool) -> None:
-        self.dismiss(answer)
+    def action_go_back(self) -> None:
+        self.app.pop_screen()
 
 
 HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
@@ -453,17 +666,16 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
 [b u]Keys[/b u]
   [b]r / space[/b]      roll
   [b]1 to 5[/b]         hold / release a die (or click it)
-  [b]left/right[/b]     move the die cursor (with the dice focused)
-  [b]up/down[/b]        move over your scorecard (with the card focused)
-  [b]enter / space[/b]  hold the selected die, or score the selected box
-  [b]tab[/b]            switch focus: dice, your card, command bar
+  [b]left/right[/b]     move the die cursor
+  [b]up/down[/b]        move over the score sheet
+  [b]enter / space[/b]  hold the selected die, or fill the selected box
+  [b]tab[/b]            switch focus: dice, score sheet, command bar
   [b]h[/b]              hint (from the optimal solver)
   [b]shift+tab[/b]      switch mode: NORMAL, HINTS, COACH, AUTO
   [b]/[/b]              open the command bar
-  [b]?[/b] or [b]F1[/b]        this help
-  [b]n[/b]              new game (same settings)
-  [b]escape[/b]         back / to menu
-  [b]q[/b]              quit
+  [b]?[/b] or [b]F1[/b]        help
+  [b]n[/b]              new game   [b]v[/b] review   [b]m[/b]/[b]esc[/b] menu   [b]q[/b] quit
+                 (leaving always saves the game; continue from the menu)
 
 [b u]Commands[/b u]  (type / followed by the command)
   [b]/help[/b] or [b]/?[/b]     this help
@@ -479,7 +691,7 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]/speed X[/b]        bot speed: slow, normal, fast, instant
   [b]/stats[/b]          your statistics
   [b]/update[/b]         check for updates now and install
-  [b]/restart[/b]        restart the app (after an update)
+  [b]/restart[/b]        restart the app
   [b]/version[/b]        show the version
   [b]/menu[/b]           back to the main menu
   [b]/quit[/b]           quit
@@ -512,108 +724,28 @@ dynamic programming over all scorecard states, expected score ~254.6.
 """
 
 
-class HelpScreen(ModalScreen[None]):
-    BINDINGS = [Binding("escape,q,question_mark,f1", "dismiss_help", "Close")]
-
-    def compose(self) -> ComposeResult:
-        with Container(id="help-box"):
-            yield Static(HELP_TEXT, id="help-text", markup=True)
-            yield Button("Close (esc)", id="help-close")
-
-    @on(Button.Pressed, "#help-close")
-    def _close(self) -> None:
-        self.dismiss()
-
-    def action_dismiss_help(self) -> None:
-        self.dismiss()
-
-
-class ReviewScreen(ModalScreen[None]):
-    """Post-game (or mid-game) coach review: every decision, worst first."""
-
-    BINDINGS = [Binding("escape,q,v", "dismiss_review", "Close")]
-
-    def __init__(self, tracker: CoachTracker, title: str = "Game review") -> None:
-        super().__init__()
-        self.tracker = tracker
-        self.title_text = title
-
-    def compose(self) -> ComposeResult:
-        t = self.tracker
-        lines = [
-            f"[b]{self.title_text}[/b]",
-            "",
-            f"Accuracy: [b]{t.accuracy()}%[/b]   "
-            f"(total EV given away: {t.total_loss:.1f} points, "
-            f"{len(t.decisions)} decisions)",
-            "",
-        ]
-        if not t.decisions:
-            lines.append("No graded decisions yet. Play a turn first.")
-        else:
-            lines.append("[b u]Worst decisions[/b u]")
-            for d in t.worst(8):
-                if d.loss < 0.05:
-                    continue
-                lines.append(
-                    f"  round {d.round:>2}  [{d.dice}]  you: {d.chosen}"
-                )
-                lines.append(
-                    f"           best: {d.best}  [red]-{d.loss:.1f} EV[/red]"
-                )
-            perfect = sum(1 for d in t.decisions if d.loss < 0.05)
-            lines.append("")
-            lines.append(
-                f"Perfect decisions: {perfect}/{len(t.decisions)}"
-            )
-        with Container(id="review-box"):
-            yield Static("\n".join(lines), id="review-text", markup=True)
-            yield Button("Close (esc)", id="review-close")
-
-    @on(Button.Pressed, "#review-close")
-    def _close(self) -> None:
-        self.dismiss()
-
-    def action_dismiss_review(self) -> None:
-        self.dismiss()
-
-
-class GameOverScreen(ModalScreen[str]):
-    BINDINGS = [
-        Binding("n", "result('new')", "New game"),
-        Binding("v", "result('review')", "Review"),
-        Binding("escape,m", "result('menu')", "Menu"),
+def review_text(tracker: CoachTracker, title: str) -> str:
+    lines = [
+        f"[b]{title}[/b]",
+        "",
+        f"Accuracy: [b]{tracker.accuracy()}%[/b]   "
+        f"(total EV given away: {tracker.total_loss:.1f} points, "
+        f"{len(tracker.decisions)} decisions)",
+        "",
     ]
-
-    def __init__(self, game: Game, accuracy: int | None) -> None:
-        super().__init__()
-        self.game = game
-        self.accuracy = accuracy
-
-    def compose(self) -> ComposeResult:
-        ranked = self.game.rankings()
-        winner, _ = ranked[0]
-        title = "*** You win! ***" if not winner.is_bot else f"{winner.name} wins"
-        lines = [f"[b]{title}[/b]", ""]
-        for i, (p, score) in enumerate(ranked, start=1):
-            diff = f" ({p.difficulty})" if p.difficulty else ""
-            lines.append(f"  {i}. {p.name}{diff}: [b]{score}[/b] points")
-        if self.accuracy is not None:
-            lines.append("")
-            lines.append(f"Your accuracy: [b]{self.accuracy}%[/b] (v for the review)")
-        with Container(id="gameover-box"):
-            yield Static("\n".join(lines), id="gameover-text", markup=True)
-            with Horizontal(id="gameover-buttons"):
-                yield Button("New game (n)", variant="primary", id="new")
-                yield Button("Review (v)", id="review")
-                yield Button("Menu (m)", id="menu")
-
-    @on(Button.Pressed)
-    def _button(self, event: Button.Pressed) -> None:
-        self.dismiss(str(event.button.id))
-
-    def action_result(self, what: str) -> None:
-        self.dismiss(what)
+    if not tracker.decisions:
+        lines.append("No graded decisions yet. Play a turn first.")
+        return "\n".join(lines)
+    lines.append("[b u]Worst decisions[/b u]")
+    for d in tracker.worst(8):
+        if d.loss < 0.05:
+            continue
+        lines.append(f"  round {d.round:>2}  [{d.dice}]  you: {d.chosen}")
+        lines.append(f"           best: {d.best}  [red]-{d.loss:.1f} EV[/red]")
+    perfect = sum(1 for d in tracker.decisions if d.loss < 0.05)
+    lines.append("")
+    lines.append(f"Perfect decisions: {perfect}/{len(tracker.decisions)}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -629,104 +761,105 @@ class MenuScreen(Screen):
 
     def compose(self) -> ComposeResult:
         settings = load_settings()
+        diff_idx = max(
+            0, DIFFICULTIES.index(settings.get("difficulty", "medium"))
+            if settings.get("difficulty") in DIFFICULTIES else 1
+        )
+        rules_idx = max(
+            0, RULESETS.index(settings.get("ruleset", "official"))
+            if settings.get("ruleset") in RULESETS else 0
+        )
+        n_bots = int(settings.get("n_bots", 2))
+        items = [
+            MenuItem("continue", "Continue saved game"),
+            MenuItem("new", "New game"),
+            MenuItem(
+                "bots", "Opponents", "choice",
+                [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 5)],
+                index=max(0, min(3, n_bots - 1)),
+            ),
+            MenuItem(
+                "difficulty", "Difficulty", "choice",
+                [(DIFFICULTY_LABELS[d], d) for d in DIFFICULTIES],
+                index=diff_idx,
+            ),
+            MenuItem(
+                "rules", "Game mode", "choice",
+                [(RULESET_LABELS[r], r) for r in RULESETS],
+                index=rules_idx,
+            ),
+            MenuItem(
+                "hints", "Hints", "choice",
+                [("off", "normal"), ("on", "hints")],
+                index=1 if settings.get("mode") == "hints" else 0,
+            ),
+            MenuItem("help", "Help"),
+            MenuItem("stats", "Statistics"),
+            MenuItem("quit", "Quit"),
+        ]
         with Center(id="menu-center"):
             with Vertical(id="menu-box"):
-                yield Static(Text(LOGO, style="yellow"), id="menu-logo")
-                yield Label(f"v{__version__}", id="menu-version")
-                yield Button("Continue saved game", variant="success", id="menu-continue")
-                yield Label("Opponents:", classes="menu-label")
-                yield Select(
-                    [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 5)],
-                    value=int(settings.get("n_bots", 2)),
-                    allow_blank=False,
-                    id="menu-bots",
-                )
-                yield Label("Difficulty:", classes="menu-label")
-                yield Select(
-                    [(DIFFICULTY_LABELS[d], d) for d in DIFFICULTIES],
-                    value=settings.get("difficulty", "medium"),
-                    allow_blank=False,
-                    id="menu-difficulty",
-                )
-                yield Label("Game mode:", classes="menu-label")
-                yield Select(
-                    [(RULESET_LABELS[r], r) for r in RULESETS],
-                    value=settings.get("ruleset", "official"),
-                    allow_blank=False,
-                    id="menu-rules",
-                )
-                with Horizontal(id="menu-hints-row"):
-                    yield Label("Hints:", classes="menu-label")
-                    yield Switch(value=settings.get("mode") == "hints", id="menu-hints")
-                yield Button("Play", variant="primary", id="menu-play")
-                yield Button("Help", id="menu-help")
-                yield Button("Statistics", id="menu-stats")
-                yield Button("Quit", id="menu-quit")
+                yield Static(LOGO, id="menu-logo")
+                yield Static(f"v{__version__}", id="menu-version")
+                yield AsciiMenu(items, id="menu")
+                yield Static(" ↑↓ select  ←→ change  enter confirm", id="menu-footer")
 
     def on_mount(self) -> None:
         self._refresh_continue()
-        self.query_one("#menu-play", Button).focus()
+        self.query_one(AsciiMenu).focus()
 
     def on_screen_resume(self) -> None:
         self._refresh_continue()
 
     def _refresh_continue(self) -> None:
-        self.query_one("#menu-continue", Button).display = (
-            load_game_snapshot() is not None
-        )
+        menu = self.query_one(AsciiMenu)
+        menu.set_visible("continue", load_game_snapshot() is not None)
 
-    @on(Button.Pressed, "#menu-continue")
-    def _continue(self) -> None:
-        snapshot = load_game_snapshot()
-        app = self.app
-        assert isinstance(app, YahtzeeApp)
-        if snapshot:
-            config = GameConfig(
-                difficulties=snapshot["config"]["difficulties"],
-                mode=snapshot["config"].get("mode", "normal"),
-                rules=snapshot["config"].get("rules", "official"),
-            )
-            app.start_game(config, snapshot=snapshot)
-
-    @on(Button.Pressed, "#menu-play")
-    def _play(self) -> None:
-        n = self.query_one("#menu-bots", Select).value
-        difficulty = self.query_one("#menu-difficulty", Select).value
-        rules = str(self.query_one("#menu-rules", Select).value)
-        hints = self.query_one("#menu-hints", Switch).value
+    @on(AsciiMenu.Changed)
+    def _changed(self, event: AsciiMenu.Changed) -> None:
         settings = load_settings()
-        settings.update(
-            {
-                "n_bots": n,
-                "difficulty": difficulty,
-                "ruleset": rules,
-                "mode": "hints" if hints else "normal",
-            }
-        )
+        menu = self.query_one(AsciiMenu)
+        if event.item_id == "bots":
+            settings["n_bots"] = event.value
+        elif event.item_id == "difficulty":
+            settings["difficulty"] = event.value
+        elif event.item_id == "rules":
+            settings["ruleset"] = event.value
+        elif event.item_id == "hints":
+            settings["mode"] = event.value
         save_settings(settings)
-        config = GameConfig(
-            difficulties=[str(difficulty)] * int(n),
-            mode="hints" if hints else "normal",
-            rules=rules,
-        )
+
+    @on(AsciiMenu.Activated)
+    def _activated(self, event: AsciiMenu.Activated) -> None:
+        menu = self.query_one(AsciiMenu)
         app = self.app
         assert isinstance(app, YahtzeeApp)
-        app.start_game(config)
-
-    @on(Button.Pressed, "#menu-help")
-    def _help(self) -> None:
-        self.app.push_screen(HelpScreen())
-
-    @on(Button.Pressed, "#menu-stats")
-    def _stats(self) -> None:
-        self.app.notify("\n".join(stats_summary()), title="Statistics", timeout=8)
-
-    @on(Button.Pressed, "#menu-quit")
-    def _quit(self) -> None:
-        self.app.exit()
+        if event.item_id == "continue":
+            snapshot = load_game_snapshot()
+            if snapshot:
+                config = GameConfig(
+                    difficulties=snapshot["config"]["difficulties"],
+                    mode=snapshot["config"].get("mode", "normal"),
+                    rules=snapshot["config"].get("rules", "official"),
+                )
+                app.start_game(config, snapshot=snapshot)
+        elif event.item_id == "new":
+            config = GameConfig(
+                difficulties=[str(menu.item("difficulty").value)]
+                * int(menu.item("bots").value),
+                mode=str(menu.item("hints").value),
+                rules=str(menu.item("rules").value),
+            )
+            app.start_game(config)
+        elif event.item_id == "help":
+            app.push_screen(TextPage("Help", HELP_TEXT))
+        elif event.item_id == "stats":
+            app.push_screen(TextPage("Statistics", "\n".join(stats_summary())))
+        elif event.item_id == "quit":
+            app.exit()
 
     def action_help(self) -> None:
-        self.app.push_screen(HelpScreen())
+        self.app.push_screen(TextPage("Help", HELP_TEXT))
 
     def action_quit_app(self) -> None:
         self.app.exit()
@@ -736,10 +869,11 @@ class MenuScreen(Screen):
 # The game itself
 # ---------------------------------------------------------------------------
 
-FOOTER_KEYS = (
-    " r roll   1-5 hold   ←→ dice   ↑↓ card   enter select   "
-    "tab focus   shift+tab mode   h hint   / cmd   ? help"
+FOOTER_PLAYING = (
+    " r roll   1-5 hold   arrows navigate   enter select   tab focus   "
+    "shift+tab mode   h hint   / cmd   ? help   esc menu"
 )
+FOOTER_GAME_OVER = " n new game   v review   m menu   q quit"
 
 
 class GameScreen(Screen):
@@ -751,13 +885,14 @@ class GameScreen(Screen):
         Binding("4", "hold(3)", show=False),
         Binding("5", "hold(4)", show=False),
         Binding("left,right", "focus_dice", show=False),
-        Binding("up,down", "focus_card", show=False),
+        Binding("up,down", "focus_sheet", show=False),
         Binding("h", "hint", "Hint"),
         Binding("shift+tab", "cycle_mode", "Mode", priority=True),
         Binding("slash", "command", "Command", show=False),
         Binding("question_mark,f1", "help", "Help"),
         Binding("n", "new_game", "New game", show=False),
         Binding("v", "review", "Review", show=False),
+        Binding("m", "to_menu", "Menu", show=False),
         Binding("escape", "back", "Menu", show=False),
         Binding("q", "quit_app", "Quit", show=False),
     ]
@@ -803,9 +938,7 @@ class GameScreen(Screen):
         game.turn.dice = [int(d) for d in turn.get("dice", [1] * 5)]
         game.turn.held = [bool(h) for h in turn.get("held", [False] * 5)]
         game.turn.rolls_used = int(turn.get("rolls_used", 0))
-        coach = CoachTracker(
-            decisions=[Decision(**d) for d in snap.get("coach", [])]
-        )
+        coach = CoachTracker(decisions=[Decision(**d) for d in snap.get("coach", [])])
         return players, game, coach
 
     def _snapshot(self) -> dict:
@@ -851,22 +984,16 @@ class GameScreen(Screen):
                     with Horizontal(id="dice-area"):
                         yield DiceRow(id="dice-row")
                         with Vertical(id="roll-column"):
-                            yield RollButton(id="roll-button")
+                            yield RollAction(id="roll-action")
                             yield Static("", id="turn-note", markup=True)
                     yield RichLog(id="log", markup=True, wrap=True, auto_scroll=True)
-                    yield Input(
-                        placeholder="/help for commands", id="command"
-                    )
-                with HorizontalScroll(id="cards-row"):
-                    for i, p in enumerate(self.players):
-                        yield PlayerCard(p, interactive=(i == 0))
-            yield Static(FOOTER_KEYS, id="footer-keys")
+                    yield Input(placeholder="/help for commands", id="command")
+                yield ScoreSheet(self.players)
+            yield Static(FOOTER_PLAYING, id="footer-keys")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
-        names = ", ".join(
-            f"{p.name} ({p.difficulty})" for p in self.players if p.is_bot
-        )
+        names = ", ".join(f"{p.name} ({p.difficulty})" for p in self.players if p.is_bot)
         log.write(f"[b]New game![/b] Opponents: {names}.")
         log.write(
             f"Game mode: [b]{RULESET_LABELS[self.config.rules]}[/b]"
@@ -915,7 +1042,7 @@ class GameScreen(Screen):
 
     def refresh_all(self) -> None:
         self.refresh_dice()
-        self.refresh_cards()
+        self.refresh_sheet()
         self.refresh_status()
 
     def refresh_dice(self) -> None:
@@ -927,15 +1054,15 @@ class GameScreen(Screen):
             die.blank = turn.rolls_used == 0
             die.value = turn.dice[i]
             die.held = turn.held[i] and turn.rolls_used > 0
-        button = self.query_one(RollButton)
+        roll = self.query_one(RollAction)
         note = self.query_one("#turn-note", Static)
         if self.game.finished:
-            button.enabled = False
-            note.update("")
+            roll.enabled = False
+            note.update("[b]Game over[/b]")
             return
         active = self.human_may_act()
-        button.enabled = active and turn.can_roll()
-        button.rolls_left = turn.rolls_left
+        roll.enabled = active and turn.can_roll()
+        roll.rolls_left = turn.rolls_left
         p = self.game.current
         if not p.is_bot and self.mode == "auto":
             note.update("[cyan]AUTO plays for you[/cyan]")
@@ -944,7 +1071,7 @@ class GameScreen(Screen):
         elif turn.rolls_used == 0:
             note.update("[b]Your turn![/b] press r")
         elif turn.rolls_left == 0:
-            note.update("Pick a box on your card")
+            note.update("Pick a box on the sheet")
         else:
             note.update("Hold dice, roll again,\nor score now")
 
@@ -953,10 +1080,14 @@ class GameScreen(Screen):
             return
         status = self.query_one("#statusbar", Static)
         if self.game.finished:
-            status.update(" [b]Game over[/b]")
+            winner, top = self.game.rankings()[0]
+            who = "you" if not winner.is_bot else winner.name
+            status.update(
+                f" [b]GAME OVER[/b]  ·  {who} won with [b]{top}[/b] points"
+            )
             return
         p = self.game.current
-        who = "[b yellow]YOUR TURN[/b yellow]" if not p.is_bot else f"turn: [b]{p.name}[/b]"
+        who = f"[b {ACCENT}]YOUR TURN[/b {ACCENT}]" if not p.is_bot else f"turn: [b]{p.name}[/b]"
         win = "on" if self.win_mode else "off"
         status.update(
             f" YAHTZEE [dim]v{__version__}[/dim]  ·  round [b]{self.game.round}/13[/b]"
@@ -964,7 +1095,7 @@ class GameScreen(Screen):
             f"  ·  win {win}  ·  [dim]{RULESET_LABELS[self.config.rules]}[/dim]"
         )
 
-    def refresh_cards(self) -> None:
+    def refresh_sheet(self) -> None:
         if not self.is_mounted:
             return
         turn = self.game.turn
@@ -973,13 +1104,8 @@ class GameScreen(Screen):
             for opt in self.human.card.options(turn.counts()):
                 marker = "!" if opt.forced else ""
                 preview[opt.category] = f"{opt.points}{marker}"
-        for card_widget in self.query(PlayerCard):
-            is_turn = (
-                not self.game.finished and card_widget.player is self.game.current
-            )
-            card_widget.set_state(
-                is_turn, preview if card_widget.player is self.human else {}
-            )
+        sheet = self.query_one(ScoreSheet)
+        sheet.set_state(None if self.game.finished else self.game.current, preview)
 
     # -- turn flow ---------------------------------------------------------
 
@@ -1007,7 +1133,6 @@ class GameScreen(Screen):
             )
 
     async def _animate_roll(self) -> None:
-        """A short shuffle of the rolling dice before the real result."""
         turn = self.game.turn
         if self.delay() == 0:
             return
@@ -1103,6 +1228,7 @@ class GameScreen(Screen):
         self.set_timer(0.05, self.start_turn)
 
     def finish_game(self) -> None:
+        """Game over, inline: no popup. The footer and log take over."""
         if not self._recorded:
             self._recorded = True
             clear_saved_game()
@@ -1116,23 +1242,24 @@ class GameScreen(Screen):
                 accuracy=self._final_accuracy,
             )
             winner, _ = ranked[0]
+            bar = "=" * 46
+            self.log_write(f"[dim]{bar}[/dim]")
             if winner.is_bot:
-                self.log_write(f"[b]Game over! {winner.name} wins.[/b]")
+                self.log_write(f"[b]  GAME OVER  ·  {winner.name} wins[/b]")
             else:
-                self.log_write("[b green]Game over! You win![/b green]")
-        self.refresh_all()
-
-        def done(result: str | None) -> None:
-            if result == "new":
-                self.action_new_game()
-            elif result == "review":
-                self.app.push_screen(
-                    ReviewScreen(self.coach), lambda _: self.finish_game()
+                self.log_write(f"[b green]  GAME OVER  ·  You win![/b green]")
+            for i, (p, score) in enumerate(ranked, start=1):
+                diff = f" ({p.difficulty})" if p.difficulty else ""
+                self.log_write(f"  {i}. {p.name}{diff}: [b]{score}[/b] points")
+            if self._final_accuracy is not None:
+                self.log_write(
+                    f"  Your accuracy: [b]{self._final_accuracy}%[/b] "
+                    f"(press [b]v[/b] for the review)"
                 )
-            else:
-                self.app.pop_screen()
-
-        self.app.push_screen(GameOverScreen(self.game, self._final_accuracy), done)
+            self.log_write(f"[dim]{bar}[/dim]")
+            self.log_write("[b]n[/b] new game   [b]v[/b] review   [b]m[/b] menu")
+            self.query_one("#footer-keys", Static).update(FOOTER_GAME_OVER)
+        self.refresh_all()
 
     # -- human actions -----------------------------------------------------
 
@@ -1142,7 +1269,7 @@ class GameScreen(Screen):
         turn = self.game.turn
         if not turn.can_roll():
             if turn.rolls_left == 0:
-                self.notify("No rolls left; pick a box on your card.", severity="warning")
+                self.log_write("[dim]No rolls left; pick a box on the sheet.[/dim]")
             return
         if turn.rolls_used > 0:
             decision = record_keep(
@@ -1173,7 +1300,7 @@ class GameScreen(Screen):
             return
         turn = self.game.turn
         if turn.rolls_used == 0:
-            self.notify("Roll first.", severity="warning")
+            self.log_write("[dim]Roll first (r).[/dim]")
             return
         if turn.rolls_left == 0:
             return
@@ -1187,34 +1314,34 @@ class GameScreen(Screen):
         row.show_cursor(row.has_focus)
         self.action_hold(event.index)
 
-    @on(RollButton.Rolled)
+    @on(RollAction.Rolled)
     def _roll_clicked(self) -> None:
         self.action_roll()
 
-    @on(PlayerCard.CategoryPicked)
-    def _category_picked(self, event: PlayerCard.CategoryPicked) -> None:
+    @on(ScoreSheet.CategoryPicked)
+    def _category_picked(self, event: ScoreSheet.CategoryPicked) -> None:
         if not self.human_may_act():
             return
         turn = self.game.turn
         if turn.rolls_used == 0:
-            self.notify("Roll first.", severity="warning")
+            self.log_write("[dim]Roll first (r).[/dim]")
             return
         try:
             option = self.human.card.score_option(event.category, turn.counts())
         except ValueError as exc:
-            self.notify(str(exc), severity="warning")
+            self.log_write(f"[dim]{exc}[/dim]")
             return
         self._score(self.human, option, prefix="You")
 
     def action_focus_dice(self) -> None:
         self.query_one(DiceRow).focus()
 
-    def action_focus_card(self) -> None:
-        self.query(PlayerCard).first().focus()
+    def action_focus_sheet(self) -> None:
+        self.query_one(ScoreSheet).focus()
 
     def _show_hint(self) -> None:
         if not self.is_human_turn():
-            self.notify("Hints only work during your turn.", severity="warning")
+            self.log_write("[dim]Hints only work during your turn.[/dim]")
             return
         turn = self.game.turn
         if turn.rolls_used == 0:
@@ -1255,10 +1382,11 @@ class GameScreen(Screen):
             inp.cursor_position = 1
 
     def action_help(self) -> None:
-        self.app.push_screen(HelpScreen())
+        self.app.push_screen(TextPage("Help", HELP_TEXT))
 
     def action_review(self) -> None:
-        self.app.push_screen(ReviewScreen(self.coach, title="Review so far"))
+        title = "Game review" if self.game.finished else "Review so far"
+        self.app.push_screen(TextPage("Review", review_text(self.coach, title)))
 
     def action_new_game(self) -> None:
         clear_saved_game()
@@ -1266,29 +1394,23 @@ class GameScreen(Screen):
         assert isinstance(app, YahtzeeApp)
         app.start_game(self.config, replace=True)
 
+    def action_to_menu(self) -> None:
+        self.checkpoint()
+        if not self.game.finished:
+            self.log_write("Game saved.")
+        self.app.pop_screen()
+
     def action_back(self) -> None:
         inp = self.query_one("#command", Input)
         if inp.has_focus:
             inp.value = ""
             self.query_one(DiceRow).focus()
             return
-
-        def done(yes: bool | None) -> None:
-            if yes:
-                self.checkpoint()
-                self.app.pop_screen()
-
-        self.app.push_screen(
-            ConfirmScreen("Back to the menu? (the game is saved)"), done
-        )
+        self.action_to_menu()
 
     def action_quit_app(self) -> None:
-        def done(yes: bool | None) -> None:
-            if yes:
-                self.checkpoint()
-                self.app.exit()
-
-        self.app.push_screen(ConfirmScreen("Quit Yahtzee? (the game is saved)"), done)
+        self.checkpoint()
+        self.app.exit()
 
     # -- commands ----------------------------------------------------------
 
@@ -1310,7 +1432,7 @@ class GameScreen(Screen):
         cmd, args = parts[0].lower(), parts[1:]
 
         if cmd in ("help", "?"):
-            self.app.push_screen(HelpScreen())
+            self.action_help()
         elif cmd == "hint":
             self._show_hint()
         elif cmd == "hints":
@@ -1371,8 +1493,7 @@ class GameScreen(Screen):
         elif cmd == "version":
             self.log_write(f"Yahtzee v{current_version()}")
         elif cmd == "menu":
-            self.checkpoint()
-            self.app.pop_screen()
+            self.action_to_menu()
         elif cmd in ("quit", "exit", "stop"):
             self.action_quit_app()
         else:
@@ -1421,17 +1542,15 @@ class YahtzeeApp(App):
     TITLE = f"Yahtzee v{__version__}"
 
     CSS = """
-    Screen { background: $surface; }
+    Screen { background: ansi_default; color: ansi_default; }
 
     /* Menu */
     #menu-center { align: center middle; height: 1fr; }
-    #menu-box { width: 52; height: auto; max-height: 100%; overflow-y: auto; padding: 0 2; }
-    #menu-logo { text-align: center; }
-    #menu-version { text-align: center; color: $text-muted; width: 100%; }
-    .menu-label { margin-top: 1; }
-    #menu-hints-row { height: auto; margin-top: 1; }
-    #menu-hints-row Label { padding-top: 1; }
-    #menu-box Button { width: 100%; margin-top: 1; }
+    #menu-box { width: auto; height: auto; }
+    #menu-logo { width: auto; }
+    #menu-version { color: ansi_bright_black; margin-bottom: 1; }
+    AsciiMenu { width: auto; height: auto; padding-left: 4; }
+    #menu-footer { color: ansi_bright_black; margin-top: 1; }
 
     /* Game */
     #game-root { height: 1fr; }
@@ -1440,37 +1559,31 @@ class YahtzeeApp(App):
     #left-column { width: 1fr; min-width: 58; padding: 0 1; }
     #dice-area { height: 8; margin-top: 1; }
     DiceRow { width: 60; height: 8; layout: horizontal; }
-    .die { width: 12; height: 7; }
-    .die:hover { background: $boost; }
-    #roll-column { width: 24; padding-top: 1; }
-    #roll-button { height: 1; }
-    #roll-button:hover { text-style: bold; }
+    .die { width: 12; height: 7; background: ansi_default; }
+    #roll-column { width: 26; padding-top: 1; }
+    #roll-action { height: 1; }
     #turn-note { margin-top: 1; }
     #log {
-        height: 1fr; margin-top: 1; background: $surface;
+        height: 1fr; margin-top: 1; background: ansi_default;
         scrollbar-size-vertical: 1;
-        scrollbar-background: $surface; scrollbar-color: $boost;
+        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
+        scrollbar-background-hover: ansi_default; scrollbar-color-hover: ansi_white;
+        scrollbar-background-active: ansi_default; scrollbar-color-active: ansi_white;
     }
-    #command { margin-top: 0; border: none; height: 1; background: $boost; }
-    #cards-row { width: auto; padding: 0 1; }
-    PlayerCard { width: 22; height: 21; margin-right: 1; }
-    PlayerCard:focus { background: $boost; }
-    #footer-keys { height: 1; color: $text-muted; }
+    #command { border: none; height: 1; padding: 0; background: ansi_default; }
+    ScoreSheet { width: auto; height: auto; margin: 1 1 0 0; }
+    #footer-keys { height: 1; color: ansi_bright_black; }
 
-    /* Modals */
-    ConfirmScreen, HelpScreen, GameOverScreen, ReviewScreen { align: center middle; }
-    #confirm-box, #gameover-box, #review-box {
-        width: 56; height: auto; border: ascii $primary;
-        padding: 1 2; background: $surface;
+    /* Text pages */
+    #page-title { height: 1; text-style: bold; }
+    #page-scroll {
+        height: 1fr; scrollbar-size-vertical: 1;
+        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
+        scrollbar-background-hover: ansi_default; scrollbar-color-hover: ansi_white;
+        scrollbar-background-active: ansi_default; scrollbar-color-active: ansi_white;
     }
-    #confirm-buttons, #gameover-buttons { height: auto; margin-top: 1; align-horizontal: center; }
-    #confirm-buttons Button, #gameover-buttons Button { margin-right: 2; }
-    #help-box {
-        width: 78; height: 90%; border: ascii $primary;
-        padding: 1 2; background: $surface;
-    }
-    #help-text { height: 1fr; overflow-y: auto; }
-    #help-close, #review-close { margin-top: 1; }
+    #page-body { padding: 1 2; }
+    #page-footer { height: 1; color: ansi_bright_black; }
     """
 
     def __init__(
@@ -1479,7 +1592,7 @@ class YahtzeeApp(App):
         initial: dict | None = None,
         resume: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(ansi_color=True)
         self.no_update = no_update
         self.initial = initial
         self.resume = resume
@@ -1508,6 +1621,13 @@ class YahtzeeApp(App):
         if not self.no_update:
             self._update_check()
 
+    def start_game(
+        self, config: GameConfig, replace: bool = False, snapshot: dict | None = None
+    ) -> None:
+        if replace:
+            self.pop_screen()
+        self.push_screen(GameScreen(config, snapshot=snapshot))
+
     def request_restart(self, resume: bool = False) -> None:
         """Exit and relaunch into the (possibly just-updated) code.
 
@@ -1517,13 +1637,6 @@ class YahtzeeApp(App):
         """
         self._restart_args = ["--no-update"] + (["--resume"] if resume else [])
         self.exit()
-
-    def start_game(
-        self, config: GameConfig, replace: bool = False, snapshot: dict | None = None
-    ) -> None:
-        if replace:
-            self.pop_screen()
-        self.push_screen(GameScreen(config, snapshot=snapshot))
 
     def _whats_new(self) -> None:
         from ..config import SETTINGS_FILE
@@ -1609,9 +1722,6 @@ def _changelog_summary(version: str, max_lines: int = 6) -> str | None:
 
 
 def run(no_update: bool = False, initial: dict | None = None, resume: bool = False) -> None:
-    import os
-    import sys
-
     app = YahtzeeApp(no_update=no_update, initial=initial, resume=resume)
     app.run()
     if app._restart_args is not None:
