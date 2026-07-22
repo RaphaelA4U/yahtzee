@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.5.1
+
+- Bot name pools grown to 100 female + 100 male US/UK names.
+
 ## v1.5.0
 
 - Statistics rebuilt: every FINISHED game counts (even if you abandon
