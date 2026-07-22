@@ -115,8 +115,8 @@ def record_score(
 def verdict_line(decision: Decision) -> str:
     """One-line COACH feedback for a decision."""
     if decision.loss < 0.05:
-        return f"Coach: {decision.chosen} was perfect."
+        return f"{decision.chosen} was perfect."
     return (
-        f"Coach: {decision.chosen} lost {decision.loss:.1f} EV; "
+        f"{decision.chosen} lost {decision.loss:.1f} EV; "
         f"best was {decision.best}."
     )

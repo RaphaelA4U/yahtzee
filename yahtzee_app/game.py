@@ -272,8 +272,13 @@ class Player:
     is_bot: bool = False
     difficulty: Optional[str] = None  # None for humans
     card: Scorecard = field(default_factory=Scorecard)
+    color: str = ""  # display color, assigned by the UI
     # Finished games in this match (a column per game on the score card).
     history: list[Scorecard] = field(default_factory=list)
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.name} (BOT)" if self.is_bot else self.name
 
     def match_total(self) -> int:
         return sum(c.total() for c in self.history) + self.card.total()

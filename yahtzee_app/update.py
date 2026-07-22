@@ -78,13 +78,24 @@ def quick_sync_update(fetch_timeout: int = 4) -> bool:
             return False
         if int(behind.stdout.strip()) == 0:
             return False
-        print("Updating yahtzee...", flush=True)
+        new_version = "?"
+        for line in _git("show", "@{u}:pyproject.toml").stdout.splitlines():
+            if line.strip().startswith("version"):
+                new_version = line.split("=", 1)[1].strip().strip('"')
+                break
+        print(
+            f"\033[1;35m⚡ Updating yahtzee v{current_version()} → v{new_version}...\033[0m",
+            flush=True,
+        )
         deps_before = _git("show", "HEAD:pyproject.toml").stdout
         pull = _git("pull", "--ff-only", "--quiet", timeout=60)
         if pull.returncode != 0:
+            print("Update failed; starting the current version.", flush=True)
             return False
         if deps_before != _git("show", "HEAD:pyproject.toml").stdout:
+            print("Refreshing dependencies...", flush=True)
             _reinstall_deps()
+        print(f"\033[1;35m✓ Updated to v{new_version}, starting...\033[0m", flush=True)
         return True
     except (subprocess.TimeoutExpired, Exception):  # noqa: BLE001
         return False

@@ -26,6 +26,7 @@ from textual import events, on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Horizontal, HorizontalScroll, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
@@ -72,7 +73,19 @@ MODES = ["normal", "hints", "coach", "auto"]
 MODE_LABELS = {"normal": "NORMAL", "hints": "HINTS", "coach": "COACH", "auto": "AUTO"}
 
 HUMAN_NAME = "You"
-ACCENT = "magenta"  # Claude-style purple selection/focus color
+ACCENT = "#875fff"   # Claude-style purple, leaning slightly blue
+HINT = "#ff9e3d"     # orange: hints, coach verdicts, bonuses (never yellow)
+WINC = "#4dd0e1"     # cyan-ish: WIN-mode/standings notes
+
+# Random bot names; unique within a match.
+BOT_NAME_POOL = [
+    "Alex", "Bram", "Carmen", "Daan", "Eva", "Finn", "Gwen", "Hugo",
+    "Iris", "Jules", "Kai", "Lena", "Milo", "Nora", "Otis", "Pip",
+    "Quinn", "Rosa", "Sam", "Tess", "Uma", "Vik", "Wout", "Zoe",
+]
+
+# Player colors, distinct from the UI palette above.
+PLAYER_COLOR_POOL = ["#ff6e9c", "#35c9b0", "#5fb0ff", "#a3e635", "#ff8fd2", "#f47983"]
 
 SHEET_LABELS = [
     "Ones", "Twos", "Threes", "Fours", "Fives", "Sixes",
@@ -106,17 +119,17 @@ DIE_ROWS = {
 
 
 def dice_art(values: list[int]) -> str:
-    """Five ASCII dice side by side (for the menu)."""
+    """Five ASCII dice side by side (for the menu), all columns aligned."""
     lines = ["", "", "", "", "", ""]
     for v in values:
         rows = DIE_ROWS[v]
-        lines[0] += ".-------.    "
-        lines[1] += f"|{rows[0]}|\\   "
-        lines[2] += f"|{rows[1]}| |  "
-        lines[3] += f"|{rows[2]}| |  "
-        lines[4] += "'-------' |  "
+        lines[0] += ".-------.     "
+        lines[1] += f"|{rows[0]}|\\    "
+        lines[2] += f"|{rows[1]}| |   "
+        lines[3] += f"|{rows[2]}| |   "
+        lines[4] += "'-------' |   "
         lines[5] += " \\________\\|  "
-    return "\n".join(lines)
+    return "\n".join(line.rstrip() for line in lines)
 
 
 @dataclass
@@ -129,14 +142,20 @@ class GameConfig:
 
 
 def build_players(config: GameConfig) -> list[Player]:
-    players = [Player(HUMAN_NAME, is_bot=False, card=Scorecard(config.rules))]
-    used: dict[str, int] = {}
-    for diff in config.difficulties:
-        base = BOT_NAMES[diff]
-        used[base] = used.get(base, 0) + 1
-        name = base if used[base] == 1 else f"{base} {used[base]}"
+    players = [
+        Player(HUMAN_NAME, is_bot=False, card=Scorecard(config.rules), color=ACCENT)
+    ]
+    names = random.sample(BOT_NAME_POOL, len(config.difficulties))
+    colors = random.sample(PLAYER_COLOR_POOL, len(config.difficulties))
+    for name, color, diff in zip(names, colors, config.difficulties):
         players.append(
-            Player(name, is_bot=True, difficulty=diff, card=Scorecard(config.rules))
+            Player(
+                name,
+                is_bot=True,
+                difficulty=diff,
+                card=Scorecard(config.rules),
+                color=color,
+            )
         )
     return players
 
@@ -301,7 +320,7 @@ class RollAction(Static):
 # Score cards: one card per player, one column per game (like the paper pad)
 # ---------------------------------------------------------------------------
 
-LABEL_W = 13
+LABEL_W = 15
 COL_W = 6
 
 
@@ -392,10 +411,13 @@ class PlayerCard(Widget):
     def render(self) -> Text:
         p = self.player
         cols = self._column_cards()
-        name = p.name + (f" ({p.difficulty})" if p.difficulty else "")
+        name = p.display_name
         width = 1 + LABEL_W + (1 + COL_W) * self.n_games
         out = Text(no_wrap=True)
-        head_style = f"bold {ACCENT}" if self.is_turn else "bold"
+        color = p.color or "bold"
+        head_style = f"bold {color}"
+        if self.is_turn:
+            head_style += " reverse"
         out.append("+= ", style="dim")
         out.append(name[: width - 6], style=head_style)
         out.append(" " + "=" * max(0, width - 4 - len(name)) + "+", style="dim")
@@ -411,6 +433,8 @@ class PlayerCard(Widget):
         else:
             out.append_text(self._sep())
 
+        show_cursor = self.has_focus and bool(self.preview) and not self.match_over
+
         def value_cell(card: Scorecard | None, cat: int, col: int) -> Text:
             if card is None:
                 return Text("")
@@ -424,7 +448,7 @@ class PlayerCard(Widget):
                 shown = self.preview[cat]
                 base = "x" if shown.rstrip("!") == "0" else shown
                 style = "cyan"
-                if cat == self.cursor_cat:
+                if show_cursor and cat == self.cursor_cat:
                     style = "reverse cyan"
                 elif cat == self.hovered_cat:
                     style = "bold cyan underline"
@@ -436,11 +460,11 @@ class PlayerCard(Widget):
         def label_cell(cat: int) -> Text:
             interactive_now = self.interactive and self.preview and not self.match_over
             style = ""
-            if cat == self.cursor_cat and interactive_now:
+            if show_cursor and cat == self.cursor_cat:
                 style = f"bold {ACCENT}"
             elif cat == self.hovered_cat and interactive_now:
                 style = "bold"
-            marker = ">" if (cat == self.cursor_cat and interactive_now) else " "
+            marker = ">" if (show_cursor and cat == self.cursor_cat) else " "
             t = Text(no_wrap=True)
             t.append(marker, style=f"bold {ACCENT}" if marker == ">" else "")
             t.append(SHEET_LABELS[cat], style=style)
@@ -485,11 +509,11 @@ class PlayerCard(Widget):
             )
         out.append_text(
             self._row(
-                Text(" Ybonus", style="dim"),
+                Text(" Yahtzee bonus", style="dim"),
                 [
                     Text(
                         str(c.yahtzee_bonus_count * 100) if c and c.yahtzee_bonus_count else ("-" if c else ""),
-                        style="yellow" if c and c.yahtzee_bonus_count else "dim",
+                        style=HINT if c and c.yahtzee_bonus_count else "dim",
                     )
                     for c in cols
                 ],
@@ -574,6 +598,14 @@ class PlayerCard(Widget):
 
     def on_leave(self) -> None:
         self.hovered_cat = None
+
+    def on_focus(self) -> None:
+        if self.cursor_cat is None and self.preview:
+            self.cursor_cat = sorted(self.preview)[0]
+        self.refresh()
+
+    def on_blur(self) -> None:
+        self.refresh()
 
     def watch_cursor_cat(self, _) -> None:
         self.refresh()
@@ -818,6 +850,12 @@ A match is 1 to 6 games; every game fills one column on your card, like
 the classic paper pad. The MATCH row keeps the running total; the highest
 match total wins.
 
+[b u]Card rows[/b u]
+  [b]Sum[/b]            points in the upper section so far
+  [b]Bonus 63+[/b]      35 bonus at 63+ upper points; (n) = still needed
+  [b]Yahtzee bonus[/b]  100 per extra yahtzee (if the Yahtzee box holds 50)
+  [b]TOTAL / MATCH[/b]  game total and the running match total
+
 [b u]WIN mode[/b u]  (/win, the video's asterisk)
 Maximizing points is not maximizing win chance. With WIN on (default),
 AUTO plays the endgame for win probability: exact win-chance calculation
@@ -876,10 +914,29 @@ MENU_INFO = {
     "bots": "Number of computer opponents at the table.",
     "games": "Games per match; every game fills one column on your card.",
     "hints": "Solver advice after every roll (switch anytime with shift+tab).",
+    "whatsnew": "What changed in recent updates.",
     "help": "All keys, commands, modes, and rules.",
     "stats": "Your match history and averages.",
     "quit": "See you next time.",
 }
+
+
+def changelog_text() -> str:
+    """CHANGELOG.md rendered for the What's new page."""
+    path = Path(REPO_DIR) / "CHANGELOG.md"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return "No changelog found."
+    out = []
+    for line in lines:
+        if line.startswith("# "):
+            continue
+        if line.startswith("## "):
+            out.append(f"[b]{line[3:]}[/b]")
+        else:
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 class MenuScreen(Screen):
@@ -924,6 +981,7 @@ class MenuScreen(Screen):
                 [("off", "normal"), ("on", "hints")],
                 index=1 if settings.get("mode") == "hints" else 0,
             ),
+            MenuItem("whatsnew", "What's new"),
             MenuItem("help", "Help"),
             MenuItem("stats", "Statistics"),
             MenuItem("quit", "Quit"),
@@ -1018,6 +1076,8 @@ class MenuScreen(Screen):
                 n_games=int(menu.item("games").value),
             )
             app.start_game(config)
+        elif event.item_id == "whatsnew":
+            app.push_screen(TextPage("What's new", changelog_text()))
         elif event.item_id == "help":
             app.push_screen(TextPage("Help", HELP_TEXT))
         elif event.item_id == "stats":
@@ -1090,6 +1150,8 @@ class GameScreen(Screen):
         self._recorded = False
         self._final_accuracy: int | None = None
         self._last_logged = (0, 0)
+        self._auto_count = 0
+        self._auto_timer = None
 
     # -- resume ------------------------------------------------------------
 
@@ -1100,7 +1162,11 @@ class GameScreen(Screen):
             card.boxes = [b if b is None else int(b) for b in p["boxes"]]
             card.yahtzee_bonus_count = int(p.get("ybonus", 0))
             player = Player(
-                p["name"], is_bot=p["bot"], difficulty=p.get("difficulty"), card=card
+                p["name"],
+                is_bot=p["bot"],
+                difficulty=p.get("difficulty"),
+                card=card,
+                color=p.get("color", ""),
             )
             for h in p.get("history", []):
                 past = Scorecard(self.config.rules)
@@ -1150,6 +1216,7 @@ class GameScreen(Screen):
                     "name": p.name,
                     "bot": p.is_bot,
                     "difficulty": p.difficulty,
+                    "color": p.color,
                     "boxes": p.card.boxes,
                     "ybonus": p.card.yahtzee_bonus_count,
                     "history": [
@@ -1180,14 +1247,20 @@ class GameScreen(Screen):
                             yield Static("", id="turn-note", markup=True)
                     yield RichLog(id="log", markup=True, wrap=True, auto_scroll=True)
                     yield Input(placeholder="/help for commands", id="command")
-                with HorizontalScroll(id="cards-row"):
-                    for i, p in enumerate(self.players):
-                        yield PlayerCard(p, self.n_games, interactive=(i == 0))
+                with Vertical(id="right-column"):
+                    with HorizontalScroll(id="cards-row"):
+                        for i, p in enumerate(self.players):
+                            yield PlayerCard(p, self.n_games, interactive=(i == 0))
+                    yield Static("", id="cards-more", markup=True)
             yield Static(FOOTER_PLAYING, id="footer-keys")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
-        names = ", ".join(f"{p.name} ({p.difficulty})" for p in self.players if p.is_bot)
+        names = ", ".join(
+            f"[{p.color}]{p.display_name}[/{p.color}] ({p.difficulty})"
+            for p in self.players
+            if p.is_bot
+        )
         if self._view_only:
             log.write("[b]Your last match.[/b] Press n for a new one, m for the menu.")
         else:
@@ -1198,9 +1271,9 @@ class GameScreen(Screen):
             )
             log.write("Type [b]/help[/b] or press [b]?[/b] for all keys and commands.")
             if self.mode == "hints":
-                log.write("[yellow]Hint mode is on.[/yellow]")
+                log.write(f"[{HINT}]Hint mode is on.[/{HINT}]")
             if self.mode == "coach":
-                log.write("[yellow]Coach mode is on: every decision gets a verdict.[/yellow]")
+                log.write(f"[{HINT}]Coach mode is on: every decision gets a verdict.[/{HINT}]")
         self.query_one(DiceRow).focus()
         self.refresh_all()
         if self._view_only:
@@ -1228,7 +1301,10 @@ class GameScreen(Screen):
     def log_write(self, text: str) -> None:
         if not self.is_mounted:
             return
-        self.query_one("#log", RichLog).write(text)
+        try:
+            self.query_one("#log", RichLog).write(text)
+        except NoMatches:
+            pass
 
     def delay(self) -> float:
         return SPEED_DELAYS.get(self.settings.get("speed", "normal"), 0.65)
@@ -1253,6 +1329,12 @@ class GameScreen(Screen):
     def refresh_dice(self) -> None:
         if not self.is_mounted:
             return
+        try:
+            self._refresh_dice()
+        except NoMatches:
+            pass
+
+    def _refresh_dice(self) -> None:
         turn = self.game.turn
         row = self.query_one(DiceRow)
         for i, die in enumerate(row.dice()):
@@ -1274,9 +1356,15 @@ class GameScreen(Screen):
         p = self.game.current
         lines = []
         if not p.is_bot and self.mode == "auto":
-            lines.append("[cyan]AUTO plays for you[/cyan]")
+            if self._auto_count > 0:
+                lines.append(
+                    f"[{WINC}]AUTO starts in {self._auto_count}s[/{WINC}]\n"
+                    f"[dim]shift+tab to move on[/dim]"
+                )
+            else:
+                lines.append(f"[{WINC}]AUTO plays for you[/{WINC}]")
         elif p.is_bot:
-            lines.append(f"[dim]{p.name} is thinking...[/dim]")
+            lines.append(f"[{p.color}]{p.display_name}[/{p.color}] [dim]is thinking...[/dim]")
         elif turn.rolls_used == 0:
             lines.append(f"[b {ACCENT}]Your turn![/b {ACCENT}] press r")
         elif turn.rolls_left == 0:
@@ -1293,6 +1381,12 @@ class GameScreen(Screen):
     def refresh_status(self) -> None:
         if not self.is_mounted:
             return
+        try:
+            self._refresh_status()
+        except NoMatches:
+            pass
+
+    def _refresh_status(self) -> None:
         status = self.query_one("#statusbar", Static)
         game_part = (
             f"game [b]{self.game_no}/{self.n_games}[/b]  ·  " if self.n_games > 1 else ""
@@ -1300,13 +1394,17 @@ class GameScreen(Screen):
         if self.game.finished:
             ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
             winner = ranked[0]
-            who = "you" if not winner.is_bot else winner.name
+            who = "you" if not winner.is_bot else winner.display_name
             status.update(
                 f" [b]MATCH OVER[/b]  ·  {who} won with [b]{winner.match_total()}[/b] points"
             )
             return
         p = self.game.current
-        who = f"[b {ACCENT}]YOUR TURN[/b {ACCENT}]" if not p.is_bot else f"turn: [b]{p.name}[/b]"
+        who = (
+            f"[b {ACCENT}]YOUR TURN[/b {ACCENT}]"
+            if not p.is_bot
+            else f"turn: [b {p.color}]{p.display_name}[/b {p.color}]"
+        )
         win = "on" if self.win_mode else "off"
         status.update(
             f" YAHTZEE [dim]v{__version__}[/dim]  ·  {game_part}"
@@ -1318,6 +1416,12 @@ class GameScreen(Screen):
     def refresh_cards(self) -> None:
         if not self.is_mounted:
             return
+        try:
+            self._refresh_cards()
+        except NoMatches:
+            pass
+
+    def _refresh_cards(self) -> None:
         turn = self.game.turn
         preview: dict[int, str] = {}
         if self.is_human_turn() and turn.rolls_used > 0:
@@ -1331,6 +1435,15 @@ class GameScreen(Screen):
                 preview if widget.player is self.human else {},
                 match_over=self.game.finished,
             )
+        row = self.query_one("#cards-row", HorizontalScroll)
+        more = self.query_one("#cards-more", Static)
+        if row.virtual_size.width > row.size.width > 0:
+            more.update("[dim]< scroll >  more cards[/dim]")
+        else:
+            more.update("")
+
+    def on_resize(self, event) -> None:
+        self.refresh_cards()
 
     # -- turn flow ---------------------------------------------------------
 
@@ -1395,7 +1508,7 @@ class GameScreen(Screen):
                 if player is not game.current or game.finished:
                     return
                 if is_auto_human and self.mode != "auto":
-                    self.log_write("[cyan]AUTO stopped; play on yourself.[/cyan]")
+                    self.log_write(f"[{WINC}]AUTO stopped; play on yourself.[/{WINC}]")
                     self.refresh_all()
                     return
                 if turn.rolls_used == 0:
@@ -1409,7 +1522,7 @@ class GameScreen(Screen):
                             self.oracle, player.card, counts, turn.rolls_left, ctx
                         )
                         if note:
-                            self.log_write(f"[cyan]{note}[/cyan]")
+                            self.log_write(f"[b {WINC}]WIN[/b {WINC}]   {note}")
                     else:
                         keep = bot.choose_keep(player.card, counts, turn.rolls_left)
                     if keep != counts:
@@ -1441,16 +1554,16 @@ class GameScreen(Screen):
                 game_no=self.game_no,
             )
             if self.mode == "coach":
-                self.log_write(f"[yellow]{verdict_line(decision)}[/yellow]")
+                self.log_write(f"[b {HINT}]COACH[/b {HINT}] {verdict_line(decision)}")
         player.card.apply(option, counts)
-        name = prefix or player.name
-        name_style = ACCENT if player is self.human else "bold"
-        extra = " [yellow]+100 bonus![/yellow]" if option.extra_bonus else ""
+        name = prefix if prefix in ("AUTO", "You") else player.display_name
+        name_style = f"bold {player.color}" if player.color else "bold"
+        extra = f" [{HINT}]+100 bonus![/{HINT}]" if option.extra_bonus else ""
         joker = " [dim](joker)[/dim]" if option.is_joker else ""
         dice_str = " ".join(str(d) for d in sorted(turn.dice))
         pts = f"[b]{option.points}[/b]" if option.points else "[dim]x[/dim]"
         self.log_write(
-            f"[{name_style}]{name:<6}[/{name_style}] [dim]({dice_str})[/dim] "
+            f"[{name_style}]{name:<12}[/{name_style}] [dim]({dice_str})[/dim] "
             f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}"
         )
         self.game.advance()
@@ -1461,7 +1574,10 @@ class GameScreen(Screen):
         """One game finished: next column, or wrap up the match."""
         if self.game_no < self.n_games:
             standings = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
-            line = "  ·  ".join(f"{p.name} {p.match_total()}" for p in standings)
+            line = "  ·  ".join(
+                f"[{p.color}]{p.display_name}[/{p.color}] [b]{p.match_total()}[/b]"
+                for p in standings
+            )
             self.log_write(f"[b]Game {self.game_no} done.[/b] Standings: {line}")
             for p in self.players:
                 p.history.append(p.card)
@@ -1494,12 +1610,15 @@ class GameScreen(Screen):
         bar = "=" * 44
         self.log_write(f"[dim]{bar}[/dim]")
         if winner.is_bot:
-            self.log_write(f"[b]  MATCH OVER  ·  {winner.name} wins[/b]")
+            self.log_write(f"[b]  MATCH OVER  ·  {winner.display_name} wins[/b]")
         else:
             self.log_write("[b green]  MATCH OVER  ·  You win![/b green]")
         for i, p in enumerate(ranked, start=1):
             diff = f" ({p.difficulty})" if p.difficulty else ""
-            self.log_write(f"  {i}. {p.name}{diff}: [b]{p.match_total()}[/b] points")
+            self.log_write(
+                f"  {i}. [{p.color}]{p.display_name}[/{p.color}]{diff}: "
+                f"[b]{p.match_total()}[/b] points"
+            )
         if self._final_accuracy is not None:
             self.log_write(
                 f"  Your accuracy: [b]{self._final_accuracy}%[/b] "
@@ -1531,7 +1650,7 @@ class GameScreen(Screen):
                 game_no=self.game_no,
             )
             if self.mode == "coach":
-                self.log_write(f"[yellow]{verdict_line(decision)}[/yellow]")
+                self.log_write(f"[b {HINT}]COACH[/b {HINT}] {verdict_line(decision)}")
         self.run_worker(self._human_roll(), exclusive=True, group="roll")
 
     async def _human_roll(self) -> None:
@@ -1595,10 +1714,17 @@ class GameScreen(Screen):
             return
         turn = self.game.turn
         if turn.rolls_used == 0:
-            self.log_write("[yellow]Hint: roll first.[/yellow]")
+            self.log_write(f"[{HINT}]Hint: roll first.[/{HINT}]")
             return
-        for line in hint_for(self.oracle, self.human.card, turn.counts(), turn.rolls_left):
-            self.log_write(f"[yellow]* {line}[/yellow]")
+        for kind, text in hint_for(
+            self.oracle, self.human.card, turn.counts(), turn.rolls_left
+        ):
+            if kind == "main":
+                self.log_write(f"[b {HINT}]HINT[/b {HINT}]  [b]{text}[/b]")
+            elif kind == "rule":
+                self.log_write(f"[{HINT}]      rule of thumb: {text}[/{HINT}]")
+            else:
+                self.log_write(f"[dim]      {text}[/dim]")
         # Standings-aware advice near the end of the game (the video's
         # asterisk): always shown, AUTO follows it only with win mode on.
         if turn.rolls_left > 0:
@@ -1608,23 +1734,48 @@ class GameScreen(Screen):
                     self.oracle, self.human.card, turn.counts(), turn.rolls_left, ctx
                 )
                 if note:
-                    self.log_write(f"[cyan]* {note}[/cyan]")
+                    self.log_write(f"[b {WINC}]WIN[/b {WINC}]   {note}")
 
     def action_hint(self) -> None:
         self._show_hint()
 
-    def _set_mode(self, mode: str) -> None:
+    def _set_mode(self, mode: str, countdown: bool = False) -> None:
         self.mode = mode
+        if self._auto_timer is not None:
+            self._auto_timer.stop()
+            self._auto_timer = None
+        self._auto_count = 0
         self.log_write(f"Mode: [b]{MODE_LABELS[self.mode]}[/b]")
         self.refresh_status()
         if mode == "hints" and self.is_human_turn() and self.game.turn.rolls_used > 0:
             self._show_hint()
         if mode == "auto" and self.is_human_turn():
-            self.start_turn()
+            if countdown:
+                # Grace period so you can cycle past AUTO without it
+                # taking over your turn.
+                self._auto_count = 3
+                self._auto_timer = self.set_interval(1.0, self._auto_tick)
+            else:
+                self.start_turn()
         self.refresh_dice()
 
+    def _auto_tick(self) -> None:
+        if self.mode != "auto" or not self.is_human_turn():
+            if self._auto_timer is not None:
+                self._auto_timer.stop()
+                self._auto_timer = None
+            self._auto_count = 0
+            return
+        self._auto_count -= 1
+        self.refresh_dice()
+        if self._auto_count <= 0:
+            if self._auto_timer is not None:
+                self._auto_timer.stop()
+                self._auto_timer = None
+            self.start_turn()
+
     def action_cycle_mode(self) -> None:
-        self._set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)])
+        self._set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)], countdown=True)
 
     def action_command(self) -> None:
         inp = self.query_one("#command", Input)
@@ -1731,7 +1882,7 @@ class GameScreen(Screen):
                 self.log_write("Usage: /speed slow|normal|fast|instant")
         elif cmd == "stats":
             for line in stats_summary():
-                self.log_write(f"[cyan]{line}[/cyan]")
+                self.log_write(f"[{WINC}]{line}[/{WINC}]")
         elif cmd == "update":
             self.log_write("Checking for updates...")
             app = self.app
@@ -1803,7 +1954,7 @@ class YahtzeeApp(App):
     #menu-box { width: auto; height: auto; max-height: 100%; overflow-y: auto; }
     #menu-logo { width: auto; }
     #menu-dice { width: auto; margin-top: 1; color: ansi_bright_black; }
-    #menu-version { color: ansi_bright_black; margin-bottom: 1; }
+    #menu-version { color: ansi_bright_black; margin-top: 1; margin-bottom: 1; }
     AsciiMenu { width: auto; height: auto; padding-left: 4; }
     #menu-info { height: 2; margin-top: 1; padding-left: 4; }
     #menu-footer { color: ansi_bright_black; }
@@ -1815,26 +1966,21 @@ class YahtzeeApp(App):
     #left-column { width: 1fr; min-width: 90; padding: 0 1; }
     #dice-area { height: 10; }
     DiceRow { width: 62; height: 10; layout: horizontal; border: blank; }
-    DiceRow.attention { border: ascii ansi_magenta; }
+    DiceRow.attention { border: ascii #875fff; }
     .die { width: 12; height: 7; background: ansi_default; }
-    #roll-column { width: 26; padding-top: 1; }
+    #roll-column { width: 26; padding-top: 1; margin-left: 2; }
     #roll-action { height: 1; }
     #turn-note { margin-top: 1; }
     #log {
         height: 1fr; margin-top: 1; background: ansi_default;
-        scrollbar-size-vertical: 1;
-        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
-        scrollbar-background-hover: ansi_default; scrollbar-color-hover: ansi_white;
-        scrollbar-background-active: ansi_default; scrollbar-color-active: ansi_white;
+        scrollbar-size-vertical: 0;
     }
     #command { border: none; height: 1; padding: 0; background: ansi_default; }
-    #cards-row {
-        width: auto; padding: 0;
-        scrollbar-size-horizontal: 1;
-        scrollbar-background: ansi_default; scrollbar-color: ansi_bright_black;
-    }
+    #right-column { width: auto; height: 1fr; }
+    #cards-row { width: auto; height: 1fr; padding: 0; scrollbar-size-horizontal: 0; }
+    #cards-more { height: 1; color: ansi_bright_black; }
     PlayerCard { width: auto; height: auto; margin-right: 1; border: blank; }
-    PlayerCard.attention { border: ascii ansi_magenta; }
+    PlayerCard.attention { border: ascii #875fff; }
     #footer-keys { height: 1; color: ansi_bright_black; }
 
     /* Text pages */

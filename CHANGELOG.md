@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.4.0
+
+- Every player has a color: you are purple-blue, bots get random names
+  like "Carmen (BOT)" with their own color in the log, cards, and status.
+- Clearer hints: a HINT/COACH/WIN label per line, bold advice, dim
+  alternatives on one line. No yellow anywhere; orange for hints/bonuses.
+- Switching into AUTO via shift+tab now counts down 3 seconds, so you
+  can cycle past it without it taking over your turn.
+- Focus stays on the dice until your rolls are done, then the border and
+  focus move to the first open box on your card.
+- What's new is a menu item now; the update banner shows old and new
+  version; scrollbars are hidden with a "more cards" indicator instead.
+- The menu dice are straightened, and Ybonus is now labeled
+  Yahtzee bonus (the 100-point bonuses for extra yahtzees).
+
 ## v1.3.0
 
 - Matches: 1 to 6 games per match (set Games in the menu); every player
