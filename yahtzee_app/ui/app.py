@@ -173,6 +173,7 @@ class AsciiDie(Static):
     blank: reactive[bool] = reactive(True)
     cursor: reactive[bool] = reactive(False)
     hovered: reactive[bool] = reactive(False)
+    held_color: reactive[str] = reactive("")
 
     class Pressed(Message):
         def __init__(self, index: int) -> None:
@@ -186,7 +187,7 @@ class AsciiDie(Static):
     def render(self) -> Text:
         rows = ["       ", "   ?   ", "       "] if self.blank else DIE_ROWS[self.value]
         if self.held:
-            face = f"bold {ACCENT}"
+            face = f"bold {self.held_color or ACCENT}"
         elif self.cursor or self.hovered:
             face = "bold"
         elif self.blank:
@@ -204,7 +205,7 @@ class AsciiDie(Static):
         art.append(" \\________\\|\n", style="dim")
         if self.held:
             label = f">[{self.index + 1}] HELD" if self.cursor else f" [{self.index + 1}] HELD"
-            art.append(label.center(11), style=f"bold {ACCENT}")
+            art.append(label.center(11), style=f"bold {self.held_color or ACCENT}")
         elif self.cursor:
             art.append(f">({self.index + 1})<".center(11), style="bold")
         else:
@@ -224,6 +225,9 @@ class AsciiDie(Static):
         self.refresh()
 
     def watch_hovered(self, _) -> None:
+        self.refresh()
+
+    def watch_held_color(self, _) -> None:
         self.refresh()
 
     def on_enter(self) -> None:
@@ -305,6 +309,9 @@ class RollAction(Static):
     def watch_hovered(self, _) -> None:
         self.refresh()
 
+    def watch_held_color(self, _) -> None:
+        self.refresh()
+
     def on_enter(self) -> None:
         self.hovered = True
 
@@ -320,7 +327,7 @@ class RollAction(Static):
 # Score cards: one card per player, one column per game (like the paper pad)
 # ---------------------------------------------------------------------------
 
-LABEL_W = 15
+LABEL_W = 16
 COL_W = 6
 
 
@@ -1152,6 +1159,7 @@ class GameScreen(Screen):
         self._last_logged = (0, 0)
         self._auto_count = 0
         self._auto_timer = None
+        self._last_hint_key = None
 
     # -- resume ------------------------------------------------------------
 
@@ -1302,7 +1310,9 @@ class GameScreen(Screen):
         if not self.is_mounted:
             return
         try:
-            self.query_one("#log", RichLog).write(text)
+            log = self.query_one("#log", RichLog)
+            log.write(text)
+            log.scroll_end(animate=False)
         except NoMatches:
             pass
 
@@ -1337,16 +1347,19 @@ class GameScreen(Screen):
     def _refresh_dice(self) -> None:
         turn = self.game.turn
         row = self.query_one(DiceRow)
+        holder = self.game.current if not self.game.finished else self.human
         for i, die in enumerate(row.dice()):
             die.blank = turn.rolls_used == 0
             die.value = turn.dice[i]
             die.held = turn.held[i] and turn.rolls_used > 0
+            die.held_color = holder.color
         roll = self.query_one(RollAction)
         note = self.query_one("#turn-note", Static)
-        must_roll = self.human_may_act() and turn.rolls_used == 0
-        must_fill = self.human_may_act() and turn.rolls_left == 0
-        row.set_class(must_roll, "attention")
-        self.human_card_widget().set_class(must_fill, "attention")
+        # The accent border follows your focus (like tab does).
+        acting = self.human_may_act()
+        card = self.human_card_widget()
+        row.set_class(acting and row.has_focus, "attention")
+        card.set_class(acting and card.has_focus, "attention")
         if self.game.finished:
             roll.enabled = False
             note.update("[b]Match over[/b]")
@@ -1458,6 +1471,7 @@ class GameScreen(Screen):
         if self.game.current_idx == 0 and self._last_logged != (self.game_no, self.game.round):
             self._last_logged = (self.game_no, self.game.round)
             game_part = f"Game {self.game_no} · " if self.n_games > 1 else ""
+            self.log_write("")
             self.log_write(f"[dim]── {game_part}Round {self.game.round}/13 " + "─" * 18 + "[/dim]")
         self.refresh_all()
         if p.is_bot:
@@ -1484,6 +1498,22 @@ class GameScreen(Screen):
                     die.blank = False
                     die.value = rng.randint(1, 6)
             await asyncio.sleep(0.06)
+
+    async def _animate_holds(self, keep: tuple[int, ...]) -> None:
+        """Hold dice one at a time, so bots look like they are thinking."""
+        turn = self.game.turn
+        before = list(turn.held)
+        turn.set_holds_for(keep)
+        target = list(turn.held)
+        turn.held = before
+        step = 0.14 if self.delay() > 0 else 0.0
+        for i in range(5):
+            if turn.held[i] != target[i]:
+                turn.held[i] = target[i]
+                self.refresh_dice()
+                if step:
+                    await asyncio.sleep(step)
+        self.refresh_dice()
 
     async def _do_roll(self) -> None:
         self._rolling = True
@@ -1526,8 +1556,7 @@ class GameScreen(Screen):
                     else:
                         keep = bot.choose_keep(player.card, counts, turn.rolls_left)
                     if keep != counts:
-                        turn.set_holds_for(keep)
-                        self.refresh_dice()
+                        await self._animate_holds(keep)
                         await asyncio.sleep(self.delay())
                         await self._do_roll()
                         await asyncio.sleep(self.delay())
@@ -1662,7 +1691,7 @@ class GameScreen(Screen):
             )
             self.human_card_widget().focus()
         if self.mode == "hints":
-            self._show_hint()
+            self._show_hint(auto=True)
 
     def action_hold(self, idx: int) -> None:
         if not self.human_may_act():
@@ -1708,14 +1737,19 @@ class GameScreen(Screen):
     def action_focus_card(self) -> None:
         self.human_card_widget().focus()
 
-    def _show_hint(self) -> None:
+    def _show_hint(self, auto: bool = False) -> None:
         if not self.is_human_turn():
             self.log_write("[dim]Hints only work during your turn.[/dim]")
             return
         turn = self.game.turn
         if turn.rolls_used == 0:
-            self.log_write(f"[{HINT}]Hint: roll first.[/{HINT}]")
+            if not auto:
+                self.log_write(f"[{HINT}]Hint: roll first.[/{HINT}]")
             return
+        key = (self.game_no, self.game.round, turn.rolls_used)
+        if auto and key == self._last_hint_key:
+            return  # already hinted this roll (e.g. cycling modes)
+        self._last_hint_key = key
         for kind, text in hint_for(
             self.oracle, self.human.card, turn.counts(), turn.rolls_left
         ):
@@ -1745,10 +1779,9 @@ class GameScreen(Screen):
             self._auto_timer.stop()
             self._auto_timer = None
         self._auto_count = 0
-        self.log_write(f"Mode: [b]{MODE_LABELS[self.mode]}[/b]")
         self.refresh_status()
         if mode == "hints" and self.is_human_turn() and self.game.turn.rolls_used > 0:
-            self._show_hint()
+            self._show_hint(auto=True)
         if mode == "auto" and self.is_human_turn():
             if countdown:
                 # Grace period so you can cycle past AUTO without it
@@ -1937,6 +1970,12 @@ class GameScreen(Screen):
     def on_screen_resume(self) -> None:
         self.refresh_all()
 
+    def on_descendant_focus(self, event) -> None:
+        self.refresh_dice()
+
+    def on_descendant_blur(self, event) -> None:
+        self.refresh_dice()
+
 
 # ---------------------------------------------------------------------------
 # App
@@ -1964,7 +2003,7 @@ class YahtzeeApp(App):
     #statusbar { height: 1; }
     #game-columns { height: 1fr; }
     #left-column { width: 1fr; min-width: 90; padding: 0 1; }
-    #dice-area { height: 10; }
+    #dice-area { height: 10; margin-top: 1; }
     DiceRow { width: 62; height: 10; layout: horizontal; border: blank; }
     DiceRow.attention { border: ascii #875fff; }
     .die { width: 12; height: 7; background: ansi_default; }

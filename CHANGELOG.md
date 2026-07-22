@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.1
+
+- The accent border now follows your focus (like tab): around the dice
+  while you are there, around your card when you move over.
+- Held dice show the color of whoever holds them, and bots hold their
+  dice one at a time, like a person would.
+- The log always follows the game, gets a blank line between rounds, and
+  no longer spams mode changes or duplicate hints while cycling modes.
+- A breath of air above the dice border and after card labels.
+
 ## v1.4.0
 
 - Every player has a color: you are purple-blue, bots get random names
