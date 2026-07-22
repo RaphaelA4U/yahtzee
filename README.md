@@ -1,8 +1,10 @@
 # Yahtzee TUI
 
-Yahtzee in your terminal. Fully playable with **mouse**, **keyboard**, and
-**slash commands**, against bots ranging from clueless to mathematically
-perfect. The solver, hints, and bot levels are based on the video
+Yahtzee in your terminal, ASCII table-top style: 3D dice with hover and a
+cursor, and a paper scorecard per player, like the real game on the table.
+Fully playable with **mouse**, **keyboard**, and **slash commands**, against
+bots ranging from clueless to mathematically perfect. The solver, hints, and
+bot levels are based on the video
 [*I Solved Yahtzee**](https://www.youtube.com/watch?v=DOgb5wrb7mM) by
 Ballpark Figures (Patrick Liscio): dynamic programming over every scorecard
 state, for an expected score of ~254.6.
@@ -32,29 +34,52 @@ offline.
 
 ## How to play
 
-Everything works with the mouse (click dice to hold them, click a category
-to score) and with the keyboard:
+Everything works with the mouse (click dice to hold them, click a box on
+your card to score) and with the keyboard:
 
 | Key | Action |
 | --- | --- |
-| `space` / `r` | roll |
+| `r` / `space` | roll |
 | `1` to `5` | hold / release a die |
-| arrow keys + `enter` | pick and score a category |
+| `left`/`right` | move the die cursor |
+| `up`/`down` + `enter` | pick and score a box on your card |
+| `tab` | switch focus: dice, your card, command bar |
 | `h` | hint from the optimal solver |
-| `shift+tab` | switch mode: NORMAL, HINTS, AUTO |
+| `shift+tab` | switch mode: NORMAL, HINTS, COACH, AUTO |
 | `/` | open the command bar |
 | `?` / `F1` | help |
 | `n` | new game, `q` quit, `escape` menu |
 
-Commands: `/help` `/hint` `/hints on|off` `/auto` `/mode` `/new` `/rules`
-`/speed` `/stats` `/update` `/restart` `/version` `/menu` `/quit`.
+Commands: `/help` `/hint` `/hints on|off` `/coach on|off` `/auto` `/mode`
+`/win on|off` `/review` `/new` `/rules` `/speed` `/stats` `/update`
+`/restart` `/version` `/menu` `/quit`.
+
+Best played in a roomy terminal (about 120x30 or larger).
 
 ### Modes
 
 - **NORMAL**: regular play.
 - **HINTS**: after every roll the optimal solver tells you what to keep or
   score, with expected values and the video's rules of thumb.
+- **COACH**: play on your own, but every decision gets a verdict (EV lost
+  vs optimal), a chess-style accuracy score, and a post-game review with
+  your worst mistakes.
 - **AUTO**: the solver plays your turns while you watch.
+
+### WIN mode
+
+The video's asterisk: maximizing points is not maximizing win probability.
+`/win on` makes hints and AUTO play for the win in the endgame: exact
+win-chance calculation in the final round (via the same dice DP, run on a
+success indicator) and variance control in the round before, based on the
+projected scores of your opponents.
+
+### More
+
+- Games save automatically; continue from the menu after quitting.
+- Skip the menu from the shell: `yahtzee --bots 3 --level optimal --rules
+  simple`, reproducible dice with `--seed 42`.
+- After an update the app shows what's new.
 
 ### Opponents
 

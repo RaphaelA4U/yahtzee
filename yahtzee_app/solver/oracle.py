@@ -129,3 +129,83 @@ class Oracle:
     def turn_start_ev(self, card: Scorecard) -> float:
         """Expected remaining points at the start of the turn."""
         return self.state_value(card.mask(), card.capped_upper(), card.yahtzee_flag())
+
+    # -- win mode ------------------------------------------------------------
+
+    def rated_keeps_with_sd(
+        self, card: Scorecard, counts: tuple[int, ...], rolls_left: int
+    ) -> list[tuple[RatedKeep, float]]:
+        """Like rated_keeps, but with the standard deviation of the outcome.
+
+        Moments are propagated along the optimal (EV-maximizing) continuation,
+        so the sd describes the spread you sign up for with each keep.
+        """
+        if rolls_left < 1:
+            raise ValueError("No rolls left; pick a category")
+        m1 = self._terminal_vector(card)
+        m2 = m1 * m1
+        for _ in range(rolls_left - 1):
+            ek1 = KEEP_MATRIX @ m1
+            ek2 = KEEP_MATRIX @ m2
+            n1 = np.empty_like(m1)
+            n2 = np.empty_like(m2)
+            for i, subs in enumerate(SUBSETS):
+                best = subs[np.argmax(ek1[subs])]
+                n1[i] = ek1[best]
+                n2[i] = ek2[best]
+            m1, m2 = n1, n2
+        ek1 = KEEP_MATRIX @ m1
+        ek2 = KEEP_MATRIX @ m2
+        out = []
+        for keep in keeps_of_roll(counts):
+            k = KEEP_INDEX[keep]
+            ev = float(ek1[k])
+            var = max(0.0, float(ek2[k]) - ev * ev)
+            out.append((RatedKeep(tuple(keep), ev), var**0.5))
+        out.sort(key=lambda r: r[0].ev, reverse=True)
+        return out
+
+    def success_terminal(self, card: Scorecard, needed: float) -> np.ndarray:
+        """Per final roll: 1.0 if the best choice yields >= `needed` points.
+
+        Only meaningful on the final turn (one open box), where option_value
+        equals the exact points earned because no turns remain afterwards.
+        """
+        mask, upper, flag = card.mask(), card.capped_upper(), card.yahtzee_flag()
+        from .core import ALL_ROLLS
+
+        S = np.zeros(len(ALL_ROLLS))
+        for i, counts in enumerate(ALL_ROLLS):
+            best = max(
+                self.option_value(card, opt, mask, upper, flag)
+                for opt in card.options(counts)
+            )
+            S[i] = 1.0 if best >= needed - 1e-9 else 0.0
+        return S
+
+    def success_keeps(
+        self,
+        card: Scorecard,
+        counts: tuple[int, ...],
+        rolls_left: int,
+        needed: float,
+    ) -> list[tuple[tuple[int, ...], float]]:
+        """Win-mode keeps for the final turn: P(this turn scores >= needed).
+
+        Runs the within-turn DP on a success indicator instead of EV, so every
+        keep is rated by the exact probability of reaching the target.
+        """
+        value = self.success_terminal(card, needed)
+        for _ in range(rolls_left - 1):
+            ek = KEEP_MATRIX @ value
+            nxt = np.empty_like(value)
+            for i, subs in enumerate(SUBSETS):
+                nxt[i] = ek[subs].max()
+            value = nxt
+        ek = KEEP_MATRIX @ value
+        out = [
+            (tuple(keep), float(ek[KEEP_INDEX[keep]]))
+            for keep in keeps_of_roll(counts)
+        ]
+        out.sort(key=lambda r: r[1], reverse=True)
+        return out

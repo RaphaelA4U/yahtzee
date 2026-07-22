@@ -10,12 +10,15 @@ from typing import Any
 CONFIG_DIR = Path.home() / ".config" / "yahtzee"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 STATS_FILE = CONFIG_DIR / "stats.json"
+SAVE_FILE = CONFIG_DIR / "saved_game.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "mode": "normal",           # normal | hints | auto
+    "mode": "normal",           # normal | hints | coach | auto
     "n_bots": 2,                # an average game: 3 players total
     "difficulty": "medium",
     "speed": "normal",          # slow | normal | fast | instant
+    "win_mode": False,          # endgame win-probability play in hints/auto
+    "last_seen_version": None,  # for the what's-new message after updates
 }
 
 SPEED_DELAYS = {
@@ -55,18 +58,41 @@ def load_stats() -> dict[str, Any]:
     return _read_json(STATS_FILE, {"games": []})
 
 
-def record_game(players: list[tuple[str, bool, str | None, int]]) -> None:
+def save_game_snapshot(snapshot: dict[str, Any]) -> None:
+    _write_json(SAVE_FILE, snapshot)
+
+
+def load_game_snapshot() -> dict[str, Any] | None:
+    snapshot = _read_json(SAVE_FILE, None)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def clear_saved_game() -> None:
+    try:
+        SAVE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def record_game(
+    players: list[tuple[str, bool, str | None, int]],
+    rules: str | None = None,
+    accuracy: int | None = None,
+) -> None:
     """players: (name, is_bot, difficulty, score), winner first."""
     stats = load_stats()
-    stats["games"].append(
-        {
-            "date": datetime.now().isoformat(timespec="seconds"),
-            "players": [
-                {"name": n, "bot": b, "difficulty": d, "score": s}
-                for n, b, d, s in players
-            ],
-        }
-    )
+    entry: dict[str, Any] = {
+        "date": datetime.now().isoformat(timespec="seconds"),
+        "players": [
+            {"name": n, "bot": b, "difficulty": d, "score": s}
+            for n, b, d, s in players
+        ],
+    }
+    if rules:
+        entry["rules"] = rules
+    if accuracy is not None:
+        entry["accuracy"] = accuracy
+    stats["games"].append(entry)
     _write_json(STATS_FILE, stats)
 
 
