@@ -254,8 +254,8 @@ async def test_lobby_screens_actually_render():
         app.push_screen(HostLobbyScreen())
         await pilot.pause(0.5)
         host_name = app.screen.query_one("#lobby-name", Input)
-        addresses = app.screen.query_one("#lobby-addresses", Static)
+        code = app.screen.query_one("#lobby-code", Static)
         assert host_name.region.width > 10 and host_name.region.height >= 1
-        assert addresses.region.width > 10
+        assert code.region.width > 10
         await pilot.press("escape")
         await pilot.pause(0.2)

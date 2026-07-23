@@ -1,13 +1,22 @@
-"""Settings and statistics in ~/.config/yahtzee/."""
+"""Settings and statistics in ~/.config/yahtzee/.
+
+Set YAHTZEE_PROFILE (or run `yahtzee --profile name`) to use a separate
+profile directory: its own settings, stats, saved game, and device id.
+Handy for testing online multiplayer with two terminals on one machine.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 CONFIG_DIR = Path.home() / ".config" / "yahtzee"
+_profile = os.environ.get("YAHTZEE_PROFILE", "").strip()
+if _profile:
+    CONFIG_DIR = CONFIG_DIR / "profiles" / _profile
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 STATS_FILE = CONFIG_DIR / "stats.json"
 SAVE_FILE = CONFIG_DIR / "saved_game.json"
@@ -136,7 +145,8 @@ def stats_summary() -> list[str]:
     lines = [
         "[b]Overall[/b]",
         f"  Games played  {n}   won {wins} ({100 * wins / n:.0f}%)",
-        f"  Average score {sum(scores) / n:.1f}   highest {max(scores)}",
+        f"  Average score {sum(scores) / n:.1f}   highest {max(scores)}   "
+        f"lowest {min(scores)}",
     ]
     if accs:
         lines.append(f"  Average accuracy {sum(accs) / len(accs):.0f}%")
@@ -169,4 +179,26 @@ def stats_summary() -> list[str]:
         for k, v in sorted(by_rules.items()):
             lines.append(_line(k, v))
 
+    with_boxes = [g for g in games if g.get("boxes")]
+    if with_boxes:
+        from .game import CATEGORY_NAMES
+
+        lines += [
+            "",
+            f"[b]Per category[/b]  [dim]({len(with_boxes)} games with box data)[/dim]",
+            "  [dim]category         avg   best  crossed out[/dim]",
+        ]
+        for cat in range(13):
+            values = [
+                g["boxes"][cat]
+                for g in with_boxes
+                if len(g.get("boxes", [])) == 13 and g["boxes"][cat] is not None
+            ]
+            if not values:
+                continue
+            zeros = sum(1 for v in values if v == 0)
+            lines.append(
+                f"  {CATEGORY_NAMES[cat]:<15}{sum(values) / len(values):>6.1f}"
+                f"{max(values):>7}{100 * zeros / len(values):>10.0f}%"
+            )
     return lines

@@ -291,6 +291,18 @@ class HostServer:
     def seat_by_uuid(self, dev: str) -> Optional[Seat]:
         return next((s for s in self.seats if s.uuid == dev), None)
 
+    async def kick(self, dev: str) -> None:
+        seat = self.seat_by_uuid(dev)
+        if seat is None:
+            return
+        if seat.writer and not seat.writer.is_closing():
+            try:
+                await send_msg(seat.writer, {"t": "error", "reason": "kicked"})
+            except (ConnectionError, OSError):
+                pass
+            seat.writer.close()
+        self.seats.remove(seat)
+
     async def handle_stream(self, reader, writer) -> None:
         hello = await read_msg(reader)
         if not hello or hello.get("t") != "hello":
@@ -427,6 +439,13 @@ class GameClient:
                     msg = await read_msg(reader)
                     if msg is None:
                         break
+                    if msg.get("t") == "error":
+                        # e.g. kicked by the host: stop reconnecting.
+                        self._closed = True
+                        await self.events.put(
+                            ("net", f"refused:{msg.get('reason', 'error')}")
+                        )
+                        return
                     await self.events.put(("msg", msg))
             except (OSError, asyncio.TimeoutError, ConnectionError):
                 pass

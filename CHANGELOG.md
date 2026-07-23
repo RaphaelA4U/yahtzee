@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.7.0
+
+- Host lobby redesigned: the room code front and center, direct
+  LAN/Tailscale addresses behind d, c rerolls the code (players stay),
+  1-5 kicks a joined player, and it says you are in the lobby.
+- Online games wait for absent players as long as the host stays open
+  (hours is fine); the host presses b to let a bot fill in until they
+  return. No more automatic 60s takeover.
+- Test multiplayer on one machine: yahtzee --profile second gives the
+  second instance its own identity and settings.
+- ctrl+q quits (plain q no longer closes the app by accident), the die
+  cursor wraps around, and up/down moves between lobby fields.
+- F2 or /screenshot saves a clean SVG of the screen to Downloads.
+- The review lists decisions in order (with the biggest misses on top),
+  statistics gained lowest score and per-category numbers, dice use the
+  OS cryptographic RNG, and the roll animation always visibly rolls.
+- Starting a new match and doing nothing no longer overwrites your
+  saved game; the menu art shrinks on short terminals so nothing hides.
+- New flags: --new and --profile (see yahtzee --help).
+
 ## v1.6.3
 
 - Fixed: the host and join lobbies rendered empty (title and footer

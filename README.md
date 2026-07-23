@@ -79,16 +79,16 @@ projected scores of your opponents.
 
 ### Online multiplayer
 
-Host a game from the menu; friends pick "Join online game" and enter one
-of the addresses your lobby shows, or just the 6-letter relay code.
-Works over LAN, Tailscale/ZeroTier, and the internet: the host tries
-UPnP to open a port automatically, and a tiny public relay
-(relay.rustema.app, see `relay/`) covers the rest, including both
-players behind CGNAT. No accounts and no database: your device gets a
-one-time random ID, your seat survives reconnects, and a bot fills in
-if you stay away for 60 seconds. Player statistics are exchanged
-peer-to-peer in the lobby; the relay pairs and pipes, nothing is stored
-centrally. Bots fill the remaining seats at the host's table.
+Host a game from the menu: the lobby shows a 6-letter room code that
+works from anywhere (via the tiny public relay in `relay/`; press d for
+direct LAN/Tailscale addresses, c for a fresh code, 1-5 to remove a
+joined player). Friends pick "Join online game" and type the code. No
+accounts and no database: your device gets a one-time random ID, seats
+survive reconnects, and player statistics travel peer-to-peer in the
+lobby. The game waits for absent players as long as the host keeps it
+open (hours if you like); the host presses b to let a bot fill in until
+they return. Bots fill the remaining seats. Test on one machine with
+`yahtzee --profile second` for the second instance.
 
 ### Matches
 
@@ -100,9 +100,16 @@ classic paper pad. The highest match total wins.
 
 - Games save automatically; continue (or review a finished match) from
   the menu.
-- Skip the menu from the shell: `yahtzee --bots 3 --level optimal --rules
-  simple --games 3`, reproducible dice with `--seed 42`.
+- Skip the menu from the shell: `yahtzee --new` (saved settings) or
+  `yahtzee --bots 3 --level optimal --rules simple --games 3`;
+  reproducible dice with `--seed 42`; all flags: `yahtzee --help`.
+- `F2` or `/screenshot` saves an SVG of the screen to Downloads.
+- Quit with `ctrl+q` (never by accident); dice use the OS cryptographic
+  random generator.
 - After an update the app shows what's new.
+- macOS and Linux install with the one-liner; on Windows use WSL, or
+  natively: `git clone`, `python -m venv`, `pip install -e .`, then
+  `python -m yahtzee_app` (Windows Terminal recommended).
 - `python -m tools.arena` pits strategies against each other headlessly;
   it was used to tune WIN mode (exact final-round win-probability play,
   51.25% head-to-head against pure EV over 3000 matches).

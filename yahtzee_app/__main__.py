@@ -13,6 +13,15 @@ def main() -> None:
         description="Yahtzee in your terminal. Run without arguments for the menu.",
     )
     parser.add_argument("-V", "--version", action="store_true", help="show the version")
+    parser.add_argument(
+        "--profile",
+        metavar="NAME",
+        help="use a separate profile (own settings, stats, identity); handy "
+        "for a second instance on the same machine",
+    )
+    parser.add_argument(
+        "--new", action="store_true", help="skip the menu and start a match with your saved settings"
+    )
     parser.add_argument("--no-update", action="store_true", help="skip the update check")
     parser.add_argument(
         "--resume", action="store_true", help="reopen the saved game right away"
@@ -36,6 +45,9 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, metavar="S", help="seed for the dice")
     args = parser.parse_args()
+
+    if args.profile:
+        os.environ["YAHTZEE_PROFILE"] = args.profile
 
     if args.version:
         from . import __version__
@@ -61,7 +73,8 @@ def main() -> None:
 
     initial = None
     if (
-        args.bots is not None
+        args.new
+        or args.bots is not None
         or args.level
         or args.rules
         or args.seed is not None

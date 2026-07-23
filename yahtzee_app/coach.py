@@ -40,6 +40,9 @@ class CoachTracker:
     def worst(self, n: int = 5) -> list[Decision]:
         return sorted(self.decisions, key=lambda d: d.loss, reverse=True)[:n]
 
+    def chronological(self) -> list[Decision]:
+        return list(self.decisions)
+
 
 def _fmt_keep(keep: tuple[int, ...]) -> str:
     if sum(keep) == 0:

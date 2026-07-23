@@ -309,11 +309,11 @@ class DiceRow(Widget, can_focus=True):
             die.cursor = show and i == self.cursor_idx
 
     def action_cursor_left(self) -> None:
-        self.cursor_idx = max(0, self.cursor_idx - 1)
+        self.cursor_idx = (self.cursor_idx - 1) % 5
         self.show_cursor(self.has_focus)
 
     def action_cursor_right(self) -> None:
-        self.cursor_idx = min(4, self.cursor_idx + 1)
+        self.cursor_idx = (self.cursor_idx + 1) % 5
         self.show_cursor(self.has_focus)
 
     def action_toggle(self) -> None:
@@ -898,7 +898,7 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]shift+tab[/b]      switch mode: NORMAL, HINTS, COACH, AUTO
   [b]/[/b]              open the command bar
   [b]?[/b] or [b]F1[/b]        help
-  [b]n[/b]              new match   [b]v[/b] review   [b]m[/b]/[b]esc[/b] menu   [b]q[/b] quit
+  [b]n[/b]              new match   [b]v[/b] review   [b]m[/b]/[b]esc[/b] menu   [b]ctrl+q[/b] quit
                  (leaving always saves; continue from the menu)
 
 [b u]Commands[/b u]  (type / followed by the command)
@@ -914,6 +914,7 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]/rules[/b]          show the active rule variant
   [b]/speed X[/b]        bot speed: slow, normal, fast, instant
   [b]/stats[/b]          your statistics
+  [b]/screenshot[/b]     save an SVG of the screen to Downloads (or F2)
   [b]/update[/b]         check for updates now and install
   [b]/restart[/b]        restart the app
   [b]/version[/b]        show the version
@@ -930,12 +931,15 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]AUTO[/b]    the solver plays your turns automatically
 
 [b u]Online multiplayer[/b u]
-Host online game shares addresses for LAN, Tailscale/ZeroTier, or the
-internet (UPnP when your router allows it), plus a 6-letter relay code
-that works from anywhere; friends use Join online game with an address
-or just the code. The host's menu settings decide bots, games, and
-rules. Seats survive reconnects; a bot fills in after 60s away. Online
-you play NORMAL or HINTS (COACH/AUTO need the local engine).
+Host online game shows a 6-letter room code that works from anywhere
+(press d in the lobby for direct LAN/Tailscale addresses instead, c for
+a fresh code, 1-5 to remove a joined player). Friends use Join online
+game and type the code. The host's menu settings decide bots, games,
+and rules. The game waits for absent players indefinitely while the
+host keeps it open; the host presses b to let a bot fill in until they
+return. Seats survive reconnects. Online you play NORMAL or HINTS.
+Testing on one machine? Run the second instance with
+yahtzee --profile test (own settings and identity).
 
 [b u]The match[/b u]
 A match is 1 to 6 games; every game fills one column on your card, like
@@ -984,12 +988,26 @@ def review_text(tracker: CoachTracker, title: str) -> str:
     if not tracker.decisions:
         lines.append("No graded decisions yet. Play a turn first.")
         return "\n".join(lines)
-    lines.append("[b u]Worst decisions[/b u]")
-    for d in tracker.worst(8):
+    worst = [d for d in tracker.worst(3) if d.loss >= 0.5]
+    if worst:
+        lines.append(
+            "[b]Biggest misses:[/b] "
+            + "  ·  ".join(f"g{d.game} r{d.round} ({d.loss:.1f} EV)" for d in worst)
+        )
+        lines.append("")
+    lines.append("[b u]All decisions, in order[/b u]")
+    last = (0, 0)
+    for d in tracker.chronological():
+        if (d.game, d.round) != last:
+            last = (d.game, d.round)
+            lines.append(f"[dim]── game {d.game} · round {d.round} ──[/dim]")
         if d.loss < 0.05:
-            continue
-        lines.append(f"  game {d.game} round {d.round:>2}  ({d.dice})  you: {d.chosen}")
-        lines.append(f"             best: {d.best}  [red]-{d.loss:.1f} EV[/red]")
+            lines.append(f"  ({d.dice})  {d.chosen}  [green]ok[/green]")
+        else:
+            lines.append(
+                f"  ({d.dice})  {d.chosen}  [red]-{d.loss:.1f} EV[/red]"
+                f"  [dim]best: {d.best}[/dim]"
+            )
     perfect = sum(1 for d in tracker.decisions if d.loss < 0.05)
     lines.append("")
     lines.append(f"Perfect decisions: {perfect}/{len(tracker.decisions)}")
@@ -1037,7 +1055,7 @@ def changelog_text() -> str:
 class MenuScreen(Screen):
     BINDINGS = [
         Binding("question_mark,f1", "help", "Help"),
-        Binding("q,escape", "quit_app", "Quit"),
+        Binding("escape,ctrl+q", "quit_app", "Quit"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -1086,6 +1104,7 @@ class MenuScreen(Screen):
         with Center(id="menu-center"):
             with Vertical(id="menu-box"):
                 yield Static(LOGO, id="menu-logo")
+                yield Static("Y A H T Z E E", id="menu-logo-small")
                 yield Static(
                     dice_art([random.randint(1, 6) for _ in range(5)]),
                     id="menu-dice",
@@ -1108,9 +1127,22 @@ class MenuScreen(Screen):
         self._refresh_continue()
         self.query_one(AsciiMenu).focus()
         self._update_info()
+        self._fit_art()
+
+    def on_resize(self, event) -> None:
+        self._fit_art()
+
+    def _fit_art(self) -> None:
+        """Shrink the header art on short terminals so the menu always fits."""
+        height = self.size.height
+        self.query_one("#menu-dice", Static).display = height >= 38
+        big = height >= 27
+        self.query_one("#menu-logo", Static).display = big
+        self.query_one("#menu-logo-small", Static).display = not big
 
     def on_screen_resume(self) -> None:
         self._refresh_continue()
+        self._fit_art()
         self.query_one("#menu-dice", Static).update(
             dice_art([random.randint(1, 6) for _ in range(5)])
         )
@@ -1230,7 +1262,7 @@ FOOTER_GAME_OVER = [
     ("n new match", "new"),
     ("v review", "review"),
     ("m menu", "menu"),
-    ("q quit", "quit"),
+    ("ctrl+q quit", "quit"),
 ]
 
 
@@ -1308,7 +1340,7 @@ class GameScreen(Screen):
         Binding("v", "review", "Review", show=False),
         Binding("m", "to_menu", "Menu", show=False),
         Binding("escape", "back", "Menu", show=False),
-        Binding("q", "quit_app", "Quit", show=False),
+        Binding("ctrl+q", "quit_app", "Quit", show=False),
     ]
 
     def __init__(self, config: GameConfig, snapshot: dict | None = None) -> None:
@@ -1423,8 +1455,18 @@ class GameScreen(Screen):
             "log": self._log_history[-300:],
         }
 
+    def _touched(self) -> bool:
+        """Has this match actually started? Untouched games never
+        overwrite the previous save."""
+        return (
+            self.game.turn.rolls_used > 0
+            or self.game_no > 1
+            or any(p.history for p in self.players)
+            or any(b is not None for p in self.players for b in p.card.boxes)
+        )
+
     def checkpoint(self) -> None:
-        if not self.game.finished:
+        if not self.game.finished and self._touched():
             save_game_snapshot(self._snapshot())
 
     # -- layout ------------------------------------------------------------
@@ -1735,11 +1777,13 @@ class GameScreen(Screen):
             return
         row = self.query_one(DiceRow)
         rng = random.Random()
-        for _ in range(3):
+        for _ in range(4):
             for i, die in enumerate(row.dice()):
                 if turn.rolls_used == 0 or not turn.held[i]:
                     die.blank = False
-                    die.value = rng.randint(1, 6)
+                    # Always show a different face than the current one, so
+                    # a die that lands on the same value still visibly rolls.
+                    die.value = rng.choice([v for v in range(1, 7) if v != die.value])
             await asyncio.sleep(0.06)
 
     async def _animate_holds(self, keep: tuple[int, ...]) -> None:
@@ -1870,6 +1914,7 @@ class GameScreen(Screen):
                 "your_score": your,
                 "won": your >= best,
                 "accuracy": accuracy,
+                "boxes": list(self.human.card.boxes),
                 "players": [
                     {
                         "name": p.name,
@@ -2127,7 +2172,6 @@ class GameScreen(Screen):
         self.app.push_screen(TextPage("Review", review_text(self.coach, title)))
 
     def action_new_game(self) -> None:
-        clear_saved_game()
         app = self.app
         assert isinstance(app, YahtzeeApp)
         app.start_game(self.config, replace=True)
@@ -2228,6 +2272,13 @@ class GameScreen(Screen):
             app = self.app
             assert isinstance(app, YahtzeeApp)
             app.request_restart(resume=not self.game.finished)
+        elif cmd == "screenshot":
+            app = self.app
+            assert isinstance(app, YahtzeeApp)
+            path = app.save_terminal_screenshot()
+            self.log_write(
+                f"Screenshot saved: [b]{path}[/b]" if path else "[red]Screenshot failed.[/red]"
+            )
         elif cmd == "version":
             self.log_write(f"Yahtzee v{current_version()}")
         elif cmd == "menu":
@@ -2261,7 +2312,6 @@ class GameScreen(Screen):
             diffs = [default] * (n or len(self.config.difficulties) or 2)
         elif n is not None and len(diffs) == 1:
             diffs = diffs * n
-        clear_saved_game()
         config = GameConfig(
             difficulties=diffs, mode=self.mode, rules=rules, n_games=self.n_games
         )
@@ -2304,6 +2354,41 @@ class GameScreen(Screen):
 class YahtzeeApp(App):
     TITLE = f"Yahtzee v{__version__}"
 
+    BINDINGS = [Binding("f2", "screenshot", "Screenshot", show=False)]
+
+    def action_screenshot(self) -> None:
+        path = self.save_terminal_screenshot()
+        if path:
+            self.notify(f"Screenshot saved: {path}", timeout=6)
+        else:
+            self.notify("Screenshot failed.", severity="warning", timeout=6)
+
+    def save_terminal_screenshot(self) -> str | None:
+        """SVG of just the terminal contents (no fake window chrome),
+        saved into Downloads (or home when that does not exist)."""
+        import datetime
+        import re
+
+        try:
+            svg = self.export_screenshot()
+            # Strip the decorative window: traffic-light circles + title.
+            svg = re.sub(r"<circle[^>]*/>", "", svg)
+            svg = re.sub(
+                r"<text[^>]*>[^<]*</text>",
+                lambda m: "" if self.TITLE in m.group(0) else m.group(0),
+                svg,
+                count=3,
+            )
+            target = Path.home() / "Downloads"
+            if not target.is_dir():
+                target = Path.home()
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            path = target / f"yahtzee-{stamp}.svg"
+            path.write_text(svg)
+            return str(path)
+        except Exception:  # noqa: BLE001
+            return None
+
     CSS = """
     Screen { background: ansi_default; color: ansi_default; }
 
@@ -2311,6 +2396,7 @@ class YahtzeeApp(App):
     #menu-center { align: center middle; height: 1fr; }
     #menu-box { width: auto; height: auto; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 0; }
     #menu-logo { width: auto; }
+    #menu-logo-small { width: auto; text-style: bold; margin-bottom: 1; }
     #menu-dice { width: auto; margin-top: 1; color: ansi_bright_black; }
     #menu-version { color: ansi_bright_black; margin-top: 1; margin-bottom: 1; }
     AsciiMenu { width: auto; height: auto; padding-left: 4; }
@@ -2510,35 +2596,48 @@ def run(no_update: bool = False, initial: dict | None = None, resume: bool = Fal
 # Online multiplayer (host-authoritative; see yahtzee_app/net.py)
 # ---------------------------------------------------------------------------
 
-TAKEOVER_SECONDS = 60
+# Online matches wait indefinitely for the player whose turn it is; the
+# host can hand a disconnected or absent player's turns to a bot with the
+# b key, and the player takes back control the moment they act/reconnect.
 
 
 class HostLobbyScreen(Screen):
     """Host a game: shows shareable addresses and who has joined."""
 
-    BINDINGS = [Binding("escape", "leave", "Back")]
+    BINDINGS = [
+        Binding("escape", "leave", "Back"),
+        Binding("up", "app.focus_previous", show=False),
+        Binding("down", "app.focus_next", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
-        yield Static(" Host online game", id="page-title")
+        yield Static(" Host online game  ·  [b]you are in the lobby[/b]", id="page-title", markup=True)
         with Vertical(id="lobby-box"):
             yield Static("Your name:", classes="lobby-label")
             yield Input(value=net.player_name() or "Host", id="lobby-name")
-            yield Static("", id="lobby-addresses", markup=True)
+            yield Static("[dim]Getting a room code...[/dim]", id="lobby-code", markup=True)
             yield Static("", id="lobby-players", markup=True)
-            yield Static(
-                "[dim]Friends join via: Join online game -> one of the "
-                "addresses above.[/dim]",
-                id="lobby-help",
-                markup=True,
+            yield ActionBar(
+                [("d direct connections (lan/tailscale)", "direct")],
+                id="lobby-direct-toggle",
             )
+            yield Static("", id="lobby-direct", markup=True)
         yield ActionBar(
-            [("enter start match", "start"), ("esc back", "leave")], id="lobby-footer"
+            [
+                ("enter start match", "start"),
+                ("c new code", "newcode"),
+                ("esc back", "leave"),
+            ],
+            id="lobby-footer",
         )
 
     def on_mount(self) -> None:
         self.server = net.HostServer(net.player_name() or "Host")
         self._started = False
-        self.query_one("#lobby-players", Static).update("[dim]Waiting for players...[/dim]")
+        self._direct_lines: list[str] = ["[dim]starting...[/dim]"]
+        self._show_direct = False
+        self.room = ""
+        self._render_players()
         self.run_worker(self._boot(), exclusive=False)
         self.run_worker(self._consume(), exclusive=False)
 
@@ -2546,36 +2645,58 @@ class HostLobbyScreen(Screen):
         try:
             port = await self.server.start()
         except OSError as exc:
-            self.query_one("#lobby-addresses", Static).update(
+            self.query_one("#lobby-code", Static).update(
                 f"[red]Could not open a port: {exc}[/red]"
             )
             return
-        lines = ["[b]Share one of these addresses:[/b]"]
-        for label, ip in net.local_addresses():
-            lines.append(f"  {ip}:{port}   [dim]{label}[/dim]")
-        lines.append("  [dim]checking internet reachability (UPnP)...[/dim]")
-        lines.append("  [dim]connecting to the relay...[/dim]")
-        self.query_one("#lobby-addresses", Static).update("\n".join(lines))
-        self._upnp(port, lines)
+        self._direct_lines = [
+            f"  {ip}:{port}   [dim]{label}[/dim]" for label, ip in net.local_addresses()
+        ]
+        self._direct_lines.append("  [dim]internet (UPnP): checking...[/dim]")
+        self._render_direct()
+        self._upnp(port, self._direct_lines)
+        await self._new_room()
+
+    async def _new_room(self) -> None:
+        if getattr(self.server, "relay", None) is not None:
+            self.server.relay.stop()
         self.room = net.make_room_code()
         self.server.relay = net.RelaySlots(self.server, self.room)
         self.run_worker(self.server.relay.run(), exclusive=False)
-        self.run_worker(self._relay_status(lines), exclusive=False)
+        self.query_one("#lobby-code", Static).update("[dim]Getting a room code...[/dim]")
+        self.run_worker(self._relay_status(), exclusive=False)
 
-    async def _relay_status(self, lines: list[str]) -> None:
+    async def _relay_status(self) -> None:
+        room = self.room
         for _ in range(80):
-            if self.server.relay.ok is not None:
+            if self.server.relay.ok is not None or self.room != room:
                 break
             await asyncio.sleep(0.25)
+        if self.room != room or not self.is_mounted:
+            return
+        code = self.query_one("#lobby-code", Static)
         if self.server.relay.ok:
-            lines[-1] = (
-                f"  code [b]{self.room}[/b]   [dim]internet (relay), friends can "
-                f"enter just this code[/dim]"
+            spaced = " ".join(self.room)
+            code.update(
+                f"\nRoom code:   [b reverse {ACCENT}]  {spaced}  [/b reverse {ACCENT}]\n"
+                f"[dim]Friends: open yahtzee -> Join online game -> type this "
+                f"code. Works from anywhere.[/dim]"
             )
         else:
-            lines[-1] = "  [dim]relay not reachable right now[/dim]"
-        if self.is_mounted:
-            self.query_one("#lobby-addresses", Static).update("\n".join(lines))
+            code.update(
+                "[red]Relay not reachable;[/red] [dim]use a direct address "
+                "below (press d).[/dim]"
+            )
+
+    def _render_direct(self) -> None:
+        panel = self.query_one("#lobby-direct", Static)
+        if self._show_direct:
+            panel.update(
+                "[b]Direct addresses[/b] [dim](same network, Tailscale or "
+                "ZeroTier; no relay needed)[/dim]\n" + "\n".join(self._direct_lines)
+            )
+        else:
+            panel.update("")
 
     @work(thread=True, exclusive=True, group="upnp")
     def _upnp(self, port: int, lines: list[str]) -> None:
@@ -2585,13 +2706,11 @@ class HostLobbyScreen(Screen):
             lines[idx] = f"  {public}:{port}   [dim]internet (UPnP)[/dim]"
         else:
             lines[idx] = (
-                "  [dim]no UPnP; use the relay code, Tailscale/ZeroTier, or "
+                "  [dim]no UPnP; the relay code covers internet play, or "
                 f"forward TCP {port}[/dim]"
             )
         if self.is_mounted:
-            self.app.call_from_thread(
-                self.query_one("#lobby-addresses", Static).update, "\n".join(lines)
-            )
+            self.app.call_from_thread(self._render_direct)
 
     async def _consume(self) -> None:
         while not self._started:
@@ -2600,22 +2719,27 @@ class HostLobbyScreen(Screen):
                 self._render_players()
 
     def _render_players(self) -> None:
-        lines = ["", "[b]At the table:[/b]", f"  {net.player_name() or 'Host'} [dim](you, host)[/dim]"]
-        for seat in self.server.seats:
-            state = "" if seat.connected else "  [red]disconnected[/red]"
+        lines = [
+            "[b]At the table:[/b]",
+            f"  [{ACCENT}]{net.player_name() or 'Host'}[/{ACCENT}] [dim](you, host)[/dim]",
+        ]
+        for i, seat in enumerate(self.server.seats, start=1):
+            state = "" if seat.connected else "  [red]offline[/red]"
             st = seat.stats or {}
             stats = (
                 f"[dim]{st.get('games', 0)} games · avg {st.get('avg', 0)}[/dim]"
                 if st.get("games")
                 else "[dim]no stats yet[/dim]"
             )
-            lines.append(f"  {seat.name}  {stats}{state}")
+            lines.append(f"  {seat.name}  {stats}{state}  [dim](press {i} to kick)[/dim]")
+        if not self.server.seats:
+            lines.append("  [dim]nobody else yet - share the code above[/dim]")
         settings = load_settings()
         lines.append(
-            f"\n[dim]Settings from the menu: {settings.get('n_bots', 2)} bots "
+            f"\n[dim]Match: {settings.get('n_bots', 2)} bots "
             f"({settings.get('difficulty', 'medium')}), "
-            f"{settings.get('n_games', 3)} games, {settings.get('ruleset', 'official')}."
-            f" Bots fill the remaining seats.[/dim]"
+            f"{settings.get('n_games', 3)} games, {settings.get('ruleset', 'official')}. "
+            f"Bots fill seats you do not fill with friends. Change it in the menu.[/dim]"
         )
         self.query_one("#lobby-players", Static).update("\n".join(lines))
 
@@ -2623,11 +2747,35 @@ class HostLobbyScreen(Screen):
     def _name_submitted(self) -> None:
         self.action_start()
 
+    def key_c(self) -> None:
+        if not self.query_one("#lobby-name", Input).has_focus:
+            self.run_worker(self._new_room(), exclusive=False)
+
+    def key_d(self) -> None:
+        if not self.query_one("#lobby-name", Input).has_focus:
+            self._show_direct = not self._show_direct
+            self._render_direct()
+
+    def on_key(self, event) -> None:
+        if self.query_one("#lobby-name", Input).has_focus:
+            return
+        if event.key in "12345":
+            idx = int(event.key) - 1
+            if idx < len(self.server.seats):
+                seat = self.server.seats[idx]
+                self.run_worker(self.server.kick(seat.uuid), exclusive=False)
+                self.notify(f"{seat.name} removed.", timeout=4)
+
     def on_action_bar_invoked(self, event) -> None:
         if event.action == "start":
             self.action_start()
         elif event.action == "leave":
             self.action_leave()
+        elif event.action == "newcode":
+            self.run_worker(self._new_room(), exclusive=False)
+        elif event.action == "direct":
+            self._show_direct = not self._show_direct
+            self._render_direct()
 
     def action_start(self) -> None:
         if self._started:
@@ -2659,7 +2807,11 @@ class HostLobbyScreen(Screen):
 class JoinLobbyScreen(Screen):
     """Join a friend's game by address."""
 
-    BINDINGS = [Binding("escape", "leave", "Back")]
+    BINDINGS = [
+        Binding("escape", "leave", "Back"),
+        Binding("up", "app.focus_previous", show=False),
+        Binding("down", "app.focus_next", show=False),
+    ]
 
     def compose(self) -> ComposeResult:
         yield Static(" Join online game", id="page-title")
@@ -2773,9 +2925,9 @@ class OnlineHostScreen(GameScreen):
         super().on_mount()
         self.run_worker(self._consume(), exclusive=False)
         self.log_write(
-            "[b]Online match![/b] You are hosting; your game continues even "
-            "if someone drops (a bot fills in after "
-            f"{TAKEOVER_SECONDS}s).",
+            "[b]Online match![/b] You are hosting. The game waits for absent "
+            "players as long as you keep it open; press [b]b[/b] during their "
+            "turn to let a bot fill in until they return.",
         )
         self._net_sync()
 
@@ -2816,28 +2968,36 @@ class OnlineHostScreen(GameScreen):
     def _remote_turn(self, player: Player) -> None:
         dev = self._uuid_of(player)
         seat = self.server.seat_by_uuid(dev) if dev else None
-        if dev in self._takeover or (seat and not seat.connected):
-            if dev not in self._takeover:
-                self._arm_takeover(dev, player)
-            else:
-                self._bot_stand_in(player)
+        if dev in self._takeover:
+            self._bot_stand_in(player)
+            return
+        if seat and not seat.connected:
+            self.log_write(
+                f"[{p_c(player)}]{player.display_name}[/{p_c(player)}] is "
+                f"offline. The game waits; press [b]b[/b] to let a bot play "
+                f"their turns until they return.",
+                share=True,
+            )
 
-    def _arm_takeover(self, dev: str, player: Player) -> None:
-        self.log_write(
-            f"[{p_c(player)}]{player.display_name}[/{p_c(player)}] is offline; "
-            f"a bot takes over in {TAKEOVER_SECONDS}s if they stay away.",
-            share=True,
-        )
-        self.set_timer(TAKEOVER_SECONDS, lambda: self._maybe_takeover(dev))
-
-    def _maybe_takeover(self, dev: str) -> None:
-        seat = self.server.seat_by_uuid(dev)
-        if seat and seat.connected:
+    def key_b(self) -> None:
+        """Toggle a bot stand-in for the remote player whose turn it is."""
+        player = self.game.current
+        dev = self._uuid_of(player)
+        if dev is None:
+            return
+        if dev in self._takeover:
+            self._takeover.discard(dev)
+            self.log_write(
+                f"Bot stand-in for {player.display_name} switched off.", share=True
+            )
             return
         self._takeover.add(dev)
-        idx = next((i for i, d in self._uuid_by_player.items() if d == dev), None)
-        if idx is not None and self.game.current is self.players[idx]:
-            self._bot_stand_in(self.players[idx])
+        self.log_write(
+            f"A bot plays for [{p_c(player)}]{player.display_name}"
+            f"[/{p_c(player)}] until they are back.",
+            share=True,
+        )
+        self._bot_stand_in(player)
 
     def _bot_stand_in(self, player: Player) -> None:
         self._turn_worker = self.run_worker(
@@ -2868,7 +3028,7 @@ class OnlineHostScreen(GameScreen):
                         None,
                     )
                     if player is not None and self.game.current is player:
-                        self._arm_takeover(seat.uuid, player)
+                        self._remote_turn(player)
             elif kind == "action":
                 await self._handle_action(event[1], event[2])
 
@@ -3017,6 +3177,7 @@ class OnlineClientScreen(GameScreen):
                 "your_score": mine,
                 "won": mine >= max(scores) if scores else False,
                 "accuracy": None,
+                "boxes": list(card.boxes),
                 "online": True,
                 "players": [
                     {

@@ -176,6 +176,9 @@ async def test_escape_saves_and_returns_to_menu_without_dialog():
         app.start_game(GameConfig(difficulties=["easy"], mode="normal"))
         await pilot.pause()
         assert isinstance(app.screen, GameScreen)
+        app.screen.settings["speed"] = "instant"
+        await pilot.press("r")  # untouched games are not saved; roll first
+        await pilot.pause(0.3)
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(app.screen, MenuScreen)
@@ -193,6 +196,9 @@ async def test_restart_command_saves_and_requests_restart():
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, GameScreen)
+        screen.settings["speed"] = "instant"
+        await pilot.press("r")  # untouched games are not saved; roll first
+        await pilot.pause(0.3)
         screen.handle_command("/restart")
     assert app._restart_args == ["--no-update", "--resume"]
 
@@ -213,6 +219,23 @@ async def test_resume_reopens_saved_game():
         await pilot.pause()
         assert isinstance(app.screen, GameScreen)
         assert app.screen.human.card.boxes == source.human.card.boxes
+
+
+def test_untouched_new_game_keeps_previous_save():
+    """Starting a new match and doing nothing must not clobber the save."""
+    import yahtzee_app.config as cfg
+
+    config = GameConfig(difficulties=["easy"], mode="normal")
+    s1 = GameScreen(config)
+    s1.game.turn.roll()
+    cfg.save_game_snapshot(s1._snapshot())
+    saved = cfg.load_game_snapshot()
+    fresh = GameScreen(config)
+    fresh.checkpoint()  # untouched: must be a no-op
+    assert cfg.load_game_snapshot() == saved
+    fresh.game.turn.roll()
+    fresh.checkpoint()  # touched: now it may overwrite
+    assert cfg.load_game_snapshot() != saved
 
 
 def test_snapshot_roundtrip():

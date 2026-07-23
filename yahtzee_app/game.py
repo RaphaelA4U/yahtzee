@@ -341,7 +341,12 @@ class Game:
         if not players:
             raise ValueError("At least 1 player required")
         self.players = players
-        self.rng = random.Random(seed)
+        # Dice use the OS cryptographic RNG (SystemRandom, /dev/urandom or
+        # the platform equivalent) unless a seed is given for reproducible
+        # games (--seed): then a seeded Mersenne Twister.
+        self.rng: random.Random = (
+            random.Random(seed) if seed is not None else random.SystemRandom()
+        )
         self.round = 1
         self.current_idx = 0
         self.turn = TurnState(self.rng)
