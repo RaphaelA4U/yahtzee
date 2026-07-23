@@ -230,3 +230,32 @@ def test_room_codes():
     assert len(code) == 6 and net.looks_like_code(code)
     assert not net.looks_like_code("1.2.3.4:5333")
     assert not net.looks_like_code("myhost:5333")
+
+
+@pytest.mark.asyncio
+async def test_lobby_screens_actually_render():
+    """Regression: the lobby bodies must have real size on screen."""
+    from textual.widgets import Input, Static
+
+    from yahtzee_app.ui.app import HostLobbyScreen, JoinLobbyScreen, YahtzeeApp
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(JoinLobbyScreen())
+        await pilot.pause(0.3)
+        name = app.screen.query_one("#join-name", Input)
+        addr = app.screen.query_one("#join-address", Input)
+        assert name.region.width > 10 and name.region.height >= 1
+        assert addr.region.width > 10
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+        app.push_screen(HostLobbyScreen())
+        await pilot.pause(0.5)
+        host_name = app.screen.query_one("#lobby-name", Input)
+        addresses = app.screen.query_one("#lobby-addresses", Static)
+        assert host_name.region.width > 10 and host_name.region.height >= 1
+        assert addresses.region.width > 10
+        await pilot.press("escape")
+        await pilot.pause(0.2)

@@ -2343,7 +2343,7 @@ class YahtzeeApp(App):
     #footer-keys { height: 1; color: ansi_bright_black; }
 
     /* Online lobbies */
-    #lobby-box { width: auto; height: 1fr; padding: 1 2; }
+    #lobby-box { width: 1fr; height: 1fr; padding: 1 2; }
     .lobby-label { margin-top: 1; color: ansi_bright_black; }
     #lobby-box Input { border: none; height: 1; padding: 0; background: ansi_default; max-width: 40; }
     #lobby-addresses { margin-top: 1; }

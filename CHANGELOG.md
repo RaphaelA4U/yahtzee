@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.3
+
+- Fixed: the host and join lobbies rendered empty (title and footer
+  only); the body now shows the name field, share addresses, relay code,
+  and player list as intended.
+
 ## v1.6.2
 
 - Compact cards: on narrow terminals (quarter screen) the cards switch
