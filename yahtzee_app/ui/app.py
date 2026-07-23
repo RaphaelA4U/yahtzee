@@ -921,6 +921,13 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
   [b]/menu[/b]           back to the main menu
   [b]/quit[/b]           quit
 
+[b u]Command line[/b u]  (yahtzee --help shows the same)
+  [b]--new[/b]            skip the menu, play with your saved settings
+  [b]--resume[/b]         reopen the saved game right away
+  [b]--profile NAME[/b]   separate settings/identity (second instance)
+  [b]--bots --level --rules --games --seed[/b]   custom match setup
+  [b]--no-update[/b]      skip the update check this start
+
 [b u]Modes[/b u]  (shift+tab cycles)
   [b]NORMAL[/b]  regular play
   [b]HINTS[/b]   BEFORE you decide, the optimal solver shows the best keep
@@ -1686,7 +1693,7 @@ class GameScreen(Screen):
         p = self.game.current
         who = (
             f"[b {ACCENT}]YOUR TURN[/b {ACCENT}]"
-            if not p.is_bot
+            if p is self.human
             else f"turn: [b {p.color}]{p.display_name}[/b {p.color}]"
         )
         win = "on" if self.win_mode else "off"
@@ -2662,7 +2669,7 @@ class HostLobbyScreen(Screen):
             self.server.relay.stop()
         self.room = net.make_room_code()
         self.server.relay = net.RelaySlots(self.server, self.room)
-        self.run_worker(self.server.relay.run(), exclusive=False)
+        self.app.run_worker(self.server.relay.run(), exclusive=False)
         self.query_one("#lobby-code", Static).update("[dim]Getting a room code...[/dim]")
         self.run_worker(self._relay_status(), exclusive=False)
 
@@ -2721,7 +2728,7 @@ class HostLobbyScreen(Screen):
     def _render_players(self) -> None:
         lines = [
             "[b]At the table:[/b]",
-            f"  [{ACCENT}]{net.player_name() or 'Host'}[/{ACCENT}] [dim](you, host)[/dim]",
+            f"  [{ACCENT}]{self.server.host_name}[/{ACCENT}] [dim](you, host)[/dim]",
         ]
         for i, seat in enumerate(self.server.seats, start=1):
             state = "" if seat.connected else "  [red]offline[/red]"
@@ -2742,6 +2749,11 @@ class HostLobbyScreen(Screen):
             f"Bots fill seats you do not fill with friends. Change it in the menu.[/dim]"
         )
         self.query_one("#lobby-players", Static).update("\n".join(lines))
+
+    @on(Input.Changed, "#lobby-name")
+    def _name_changed(self, event: Input.Changed) -> None:
+        self.server.host_name = event.value.strip()[:16] or "Host"
+        self._render_players()
 
     @on(Input.Submitted, "#lobby-name")
     def _name_submitted(self) -> None:
@@ -2857,7 +2869,7 @@ class JoinLobbyScreen(Screen):
         net.save_player_name(name)
         self.client = net.GameClient(address, name)
         self.query_one("#join-status", Static).update("Connecting...")
-        self.run_worker(self.client.run(), exclusive=False)
+        self.app.run_worker(self.client.run(), exclusive=False)
         self.run_worker(self._consume(), exclusive=False)
 
     async def _consume(self) -> None:

@@ -126,8 +126,17 @@ def _bucket(games: list[dict], key) -> dict[str, list[dict]]:
 def _line(label: str, games: list[dict]) -> str:
     n = len(games)
     wins = sum(1 for g in games if g.get("won"))
-    avg = sum(g.get("your_score", 0) for g in games) / n
-    return f"  {label:<12} {n:>4} games   won {100 * wins / n:>3.0f}%   avg {avg:6.1f}"
+    scores = [g.get("your_score", 0) for g in games]
+    accs = [g["accuracy"] for g in games if g.get("accuracy") is not None]
+    acc = (
+        f"   acc {sum(accs) / len(accs):>3.0f}% ({min(accs)}-{max(accs)})"
+        if accs
+        else ""
+    )
+    return (
+        f"  {label:<12} {n:>3} games  won {100 * wins / n:>3.0f}%  "
+        f"avg {sum(scores) / n:6.1f}  hi {max(scores):>3}  lo {min(scores):>3}{acc}"
+    )
 
 
 def stats_summary() -> list[str]:
@@ -149,7 +158,10 @@ def stats_summary() -> list[str]:
         f"lowest {min(scores)}",
     ]
     if accs:
-        lines.append(f"  Average accuracy {sum(accs) / len(accs):.0f}%")
+        lines.append(
+            f"  Accuracy avg {sum(accs) / len(accs):.0f}%   "
+            f"highest {max(accs)}%   lowest {min(accs)}%"
+        )
     lines.append("  [dim]The optimal strategy averages 254.6 per game.[/dim]")
 
     by_assist = _bucket(games, lambda g: [g.get("assist", "none")])

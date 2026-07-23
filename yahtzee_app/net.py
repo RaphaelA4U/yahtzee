@@ -323,6 +323,13 @@ class HostServer:
                 )
                 writer.close()
                 return
+            # Keep names unique at the table (host included), so two
+            # players called Raphael stay distinguishable.
+            taken = {self.host_name} | {s.name for s in self.seats}
+            base, n = name, 2
+            while name in taken:
+                name = f"{base} {n}"
+                n += 1
             seat = Seat(uuid=dev, name=name, stats=dict(hello.get("stats") or {}))
             self.seats.append(seat)
         seat.writer = writer
@@ -427,8 +434,11 @@ class GameClient:
                     },
                 )
                 first = await asyncio.wait_for(read_msg(reader), timeout=6)
-                if not first or first.get("t") == "error":
-                    reason = (first or {}).get("reason", "no response")
+                if first is None:
+                    # Dead pairing or dropped socket: retry, don't give up.
+                    raise ConnectionError("no reply from host")
+                if first.get("t") == "error":
+                    reason = first.get("reason", "error")
                     await self.events.put(("net", f"refused:{reason}"))
                     return
                 self.connected = True

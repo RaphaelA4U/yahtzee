@@ -70,10 +70,34 @@ async def _host(ws: web.WebSocketResponse, room: str) -> None:
     future: asyncio.Future = asyncio.get_event_loop().create_future()
     slot = (ws, future)
     rooms.setdefault(room, []).append(slot)
+    peer = None
+    pending = None
+    deadline = time.monotonic() + PAIR_TIMEOUT
     try:
-        peer = await asyncio.wait_for(future, timeout=PAIR_TIMEOUT)
-    except asyncio.TimeoutError:
-        peer = None
+        # While parked we must keep READING the socket: that processes
+        # ping/pong (so proxies see a live connection) and detects a dead
+        # host, which then deregisters itself instead of lingering in
+        # front of the queue. aiohttp's receive() is not cancel-safe, so
+        # a receive that is still pending when pairing happens is carried
+        # into the relay pump below instead of being cancelled.
+        while time.monotonic() < deadline:
+            if pending is None:
+                pending = asyncio.ensure_future(ws.receive())
+            await asyncio.wait(
+                {pending, future},
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=max(1.0, deadline - time.monotonic()),
+            )
+            if future.done():
+                peer = future.result()
+                break
+            if pending.done():
+                msg = pending.result()
+                pending = None
+                if msg.type not in (WSMsgType.TEXT, WSMsgType.PING, WSMsgType.PONG):
+                    break  # closed/error: this parked host is gone
+                continue
+            break  # pair timeout
     finally:
         if slot in rooms.get(room, []):
             rooms[room].remove(slot)
@@ -85,9 +109,13 @@ async def _host(ws: web.WebSocketResponse, room: str) -> None:
     await ws.send_json({"paired": True})
     # Pump host -> joiner; the joiner's handler pumps the other direction.
     try:
-        async for msg in ws:
+        while True:
+            msg = await pending if pending is not None else await ws.receive()
+            pending = None
             if msg.type == WSMsgType.TEXT:
                 await peer.send_str(msg.data)
+            elif msg.type in (WSMsgType.PING, WSMsgType.PONG):
+                continue
             else:
                 break
     except (ConnectionError, RuntimeError):

@@ -201,7 +201,12 @@ async def test_relay_pairing_roundtrip():
     client = net.GameClient(room, "Guest", relay=relay_url)
     client_task = asyncio.create_task(client.run())
     try:
-        kind, payload = await asyncio.wait_for(client.events.get(), timeout=8)
+        # The first attempt may lose the race with the host slot parking
+        # itself; the client reconnects by design, so wait for "up".
+        for _ in range(10):
+            kind, payload = await asyncio.wait_for(client.events.get(), timeout=8)
+            if (kind, payload) == ("net", "up"):
+                break
         assert (kind, payload) == ("net", "up")
         kind, msg = await asyncio.wait_for(client.events.get(), timeout=8)
         assert msg["t"] == "welcome"
@@ -259,3 +264,70 @@ async def test_lobby_screens_actually_render():
         assert code.region.width > 10
         await pilot.press("escape")
         await pilot.pause(0.2)
+
+
+def _mini_state(seat_uuid: str) -> dict:
+    return {
+        "version": "x",
+        "config": {"difficulties": [], "mode": "normal", "rules": "official"},
+        "n_games": 1,
+        "game_no": 1,
+        "finished": False,
+        "round": 1,
+        "current_idx": 0,
+        "turn": {"dice": [1, 2, 3, 4, 5], "held": [False] * 5, "rolls_used": 0},
+        "players": [
+            {"name": "Hosty", "bot": False, "difficulty": None, "color": "#875fff",
+             "boxes": [None] * 13, "ybonus": 0, "history": []},
+            {"name": "Guest", "bot": False, "difficulty": None, "color": "#ff6e9c",
+             "boxes": [None] * 13, "ybonus": 0, "history": []},
+        ],
+        "uuids": ["host", seat_uuid],
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_keeps_receiving_after_lobby_handover():
+    """Regression: handing over from the join lobby to the game screen
+    must not kill the client's network loop (screen workers die with
+    their screen; the loop lives at app level now)."""
+    from textual.widgets import Input
+
+    from yahtzee_app.ui.app import JoinLobbyScreen, OnlineClientScreen, YahtzeeApp
+
+    server = net.HostServer("Hosty")
+    port = await server.start()
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(150, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(JoinLobbyScreen())
+        await pilot.pause(0.2)
+        lobby = app.screen
+        lobby.query_one("#join-name", Input).value = "Guest"
+        lobby.query_one("#join-address", Input).value = f"127.0.0.1:{port}"
+        lobby.action_connect()
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if server.seats:
+                break
+        assert server.seats
+        server.started = True
+        await server.broadcast(
+            {"t": "state", "state": _mini_state(server.seats[0].uuid), "events": []}
+        )
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, OnlineClientScreen):
+                break
+        assert isinstance(app.screen, OnlineClientScreen)
+        # The regression: a state broadcast AFTER the handover must land.
+        state2 = _mini_state(server.seats[0].uuid)
+        state2["turn"] = {"dice": [6, 6, 6, 6, 6], "held": [False] * 5, "rolls_used": 1}
+        await server.broadcast({"t": "state", "state": state2, "events": ["hi"]})
+        for _ in range(60):
+            await pilot.pause(0.1)
+            if app.screen.game.turn.dice == [6, 6, 6, 6, 6]:
+                break
+        assert app.screen.game.turn.dice == [6, 6, 6, 6, 6]
+        app.screen.client.close()
+    await server.stop()

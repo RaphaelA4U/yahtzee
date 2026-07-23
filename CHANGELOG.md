@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.7.1
+
+- Fixed: a room code stopped working after waiting a while in an empty
+  lobby. The relay now keeps parked host connections alive (keepalive
+  actually flows) and removes dead ones immediately, and the client
+  retries instead of giving up when it hits a stale pairing.
+- Fixed: after joining, the second player froze on the first state (the
+  network loop died with the lobby screen); it now survives screen
+  changes, with a regression test. Same fix protects the host's relay
+  connection after the match starts.
+- YOUR TURN now only lights up when it is genuinely YOUR turn (it lit
+  up for every human's turn on every screen).
+- The lobby name updates the table list letter by letter, and two
+  players with the same name get numbered automatically.
+- Statistics: highest/lowest score and accuracy per breakdown row.
+- The in-app help lists the command line flags too.
+
 ## v1.7.0
 
 - Host lobby redesigned: the room code front and center, direct
