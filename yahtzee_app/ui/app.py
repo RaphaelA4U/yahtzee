@@ -133,6 +133,10 @@ SHEET_LABELS = [
     "3 of a Kind", "4 of a Kind", "Full House", "Sm Straight", "Lg Straight",
     "YAHTZEE", "Chance",
 ]
+SHEET_LABELS_COMPACT = [
+    "1s", "2s", "3s", "4s", "5s", "6s",
+    "3K", "4K", "FH", "SS", "LS", "Y!", "Ch",
+]
 
 # figlet "DOS Rebel"
 LOGO = """\
@@ -394,6 +398,7 @@ class PlayerCard(Widget):
 
     cursor_cat: reactive[int | None] = reactive(None)
     hovered_cat: reactive[int | None] = reactive(None)
+    compact: reactive[bool] = reactive(False)
 
     def __init__(self, player: Player, n_games: int, interactive: bool) -> None:
         super().__init__(classes="playercard")
@@ -433,22 +438,33 @@ class PlayerCard(Widget):
 
     # -- rendering ---------------------------------------------------------
 
+    @property
+    def _label_w(self) -> int:
+        return 4 if self.compact else LABEL_W
+
+    @property
+    def _col_w(self) -> int:
+        return 5 if self.compact else COL_W
+
+    def _labels(self) -> list[str]:
+        return SHEET_LABELS_COMPACT if self.compact else SHEET_LABELS
+
     def _sep(self, heavy: bool = False) -> Text:
         ch = "=" if heavy else "-"
-        line = "+" + ch * LABEL_W + ("+" + ch * COL_W) * self.n_games + "+"
+        line = "+" + ch * self._label_w + ("+" + ch * self._col_w) * self.n_games + "+"
         return Text(line + "\n", style="dim", no_wrap=True)
 
     def _row(self, label: Text, cells: list[Text]) -> Text:
         out = Text(no_wrap=True)
         out.append("|", style="dim")
-        label.truncate(LABEL_W - 1)
-        label.pad_right(LABEL_W - 1 - len(label.plain))
+        label.truncate(self._label_w - 1)
+        label.pad_right(self._label_w - 1 - len(label.plain))
         out.append(" ")
         out.append_text(label)
         for cell in cells:
             out.append("|", style="dim")
-            cell.truncate(COL_W - 2)
-            cell.align("right", COL_W - 2)
+            cell.truncate(self._col_w - 2)
+            cell.align("right", self._col_w - 2)
             out.append(" ")
             out.append_text(cell)
             out.append(" ")
@@ -459,8 +475,8 @@ class PlayerCard(Widget):
     def render(self) -> Text:
         p = self.player
         cols = self._column_cards()
-        name = p.display_name
-        width = 1 + LABEL_W + (1 + COL_W) * self.n_games
+        name = p.display_name if not self.compact else p.name
+        width = 1 + self._label_w + (1 + self._col_w) * self.n_games
         out = Text(no_wrap=True)
         color = p.color or "bold"
         head_style = f"bold {color}"
@@ -515,7 +531,7 @@ class PlayerCard(Widget):
             marker = ">" if (show_cursor and cat == self.cursor_cat) else " "
             t = Text(no_wrap=True)
             t.append(marker, style=f"bold {ACCENT}" if marker == ">" else "")
-            t.append(SHEET_LABELS[cat], style=style)
+            t.append(self._labels()[cat], style=style)
             return t
 
         for cat in range(6):
@@ -525,7 +541,7 @@ class PlayerCard(Widget):
         out.append_text(self._sep())
         out.append_text(
             self._row(
-                Text(" Sum", style="dim"),
+                Text(" Sum" if not self.compact else "=", style="dim"),
                 [
                     Text(str(c.upper_subtotal()) if c else "", style="dim")
                     for c in cols
@@ -541,12 +557,12 @@ class PlayerCard(Widget):
             need = UPPER_BONUS_THRESHOLD - card.upper_subtotal()
             uppers_open = any(card.boxes[c] is None for c in UPPER)
             if uppers_open and (col == self.active_col and not self.match_over):
-                return Text(f"({need})", style="dim")
+                return Text(str(need) if self.compact else f"({need})", style="dim")
             return Text("-", style="dim")
 
         out.append_text(
             self._row(
-                Text(" Bonus 63+", style="dim"),
+                Text(" Bonus 63+" if not self.compact else "B63", style="dim"),
                 [bonus_cell(c, i) for i, c in enumerate(cols)],
             )
         )
@@ -557,7 +573,7 @@ class PlayerCard(Widget):
             )
         out.append_text(
             self._row(
-                Text(" Yahtzee bonus", style="dim"),
+                Text(" Yahtzee bonus" if not self.compact else "YB", style="dim"),
                 [
                     Text(
                         str(c.yahtzee_bonus_count * 100) if c and c.yahtzee_bonus_count else ("-" if c else ""),
@@ -570,7 +586,7 @@ class PlayerCard(Widget):
         out.append_text(self._sep())
         out.append_text(
             self._row(
-                Text(" TOTAL", style="bold"),
+                Text(" TOTAL" if not self.compact else "Tot", style="bold"),
                 [
                     Text(str(c.total()) if c else "", style=f"bold {ACCENT}")
                     for c in cols
@@ -587,7 +603,12 @@ class PlayerCard(Widget):
                     running += c.total()
                     match_cells.append(Text(str(running), style="bold"))
             out.append_text(self._sep())
-            out.append_text(self._row(Text(" MATCH", style="bold"), match_cells))
+            out.append_text(
+                self._row(
+                    Text(" MATCH" if not self.compact else "M", style="bold"),
+                    match_cells,
+                )
+            )
         out.append_text(self._sep(heavy=True))
         return out
 
@@ -660,6 +681,9 @@ class PlayerCard(Widget):
 
     def watch_hovered_cat(self, _) -> None:
         self.refresh()
+
+    def watch_compact(self, _) -> None:
+        self.refresh(layout=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1463,6 +1487,7 @@ class GameScreen(Screen):
             if self.mode == "coach":
                 self.log_write(f"[{HINT}]Coach mode is on: every decision gets a verdict.[/{HINT}]")
         self.query_one(DiceRow).focus()
+        self._update_compact()
         self.refresh_all()
         if self._view_only:
             self._recorded = True
@@ -1660,7 +1685,18 @@ class GameScreen(Screen):
             more.update("")
 
     def on_resize(self, event) -> None:
+        self._update_compact()
         self.refresh_cards()
+
+    def _update_compact(self) -> None:
+        full_card = 2 + LABEL_W + (1 + COL_W) * self.n_games
+        per_row = 3 if self.n_games == 1 else (2 if self.n_games <= 4 else 1)
+        widest_row = min(per_row, len(self.players))
+        available = self.size.width - 74
+        compact = available < widest_row * (full_card + 1)
+        for card in self.query(PlayerCard):
+            if card.compact != compact:
+                card.compact = compact
 
     # -- turn flow ---------------------------------------------------------
 

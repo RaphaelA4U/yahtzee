@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.2
+
+- Compact cards: on narrow terminals (quarter screen) the cards switch
+  to abbreviated labels (1s..6s, 3K, FH, Y!, Ch) automatically, so three
+  cards fit where one and a half used to.
+- The relay at relay.rustema.app is live and publicly verified.
+
 ## v1.6.1
 
 - The relay is now generic (service and container simply named "relay"),
