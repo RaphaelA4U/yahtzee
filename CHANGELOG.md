@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.7.2
+
+- Fixed: a player who joined through the relay froze after the first
+  state. Overlapping broadcasts on the relay websocket tripped over the
+  websocket library's no-concurrent-sends rule and silently dropped the
+  seat; sends and broadcasts are serialized now, one bad state update
+  can no longer stop the stream, and a regression test plays a host
+  turn against a relay-connected client.
+
 ## v1.7.1
 
 - Fixed: a room code stopped working after waiting a while in an empty

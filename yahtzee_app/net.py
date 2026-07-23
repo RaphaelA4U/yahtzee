@@ -265,6 +265,7 @@ class HostServer:
         self._server: Optional[asyncio.base_events.Server] = None
         self.port: Optional[int] = None
         self._last_state: Optional[dict] = None
+        self._broadcast_lock = asyncio.Lock()
 
     async def start(self) -> int:
         last_error: Exception = OSError("no port available")
@@ -355,15 +356,16 @@ class HostServer:
             writer.close()
 
     async def broadcast(self, msg: dict) -> None:
-        if msg.get("t") == "state":
-            self._last_state = msg.get("state")
-        for seat in self.seats:
-            if seat.connected:
-                try:
-                    await send_msg(seat.writer, msg)
-                except (ConnectionError, OSError):
-                    seat.writer = None
-                    await self.events.put(("leave", seat.uuid))
+        async with self._broadcast_lock:
+            if msg.get("t") == "state":
+                self._last_state = msg.get("state")
+            for seat in self.seats:
+                if seat.connected:
+                    try:
+                        await send_msg(seat.writer, msg)
+                    except (ConnectionError, OSError):
+                        seat.writer = None
+                        await self.events.put(("leave", seat.uuid))
 
     def lobby_payload(self) -> dict:
         return {
@@ -546,25 +548,29 @@ class _WSReader:
 
 
 class _WSWriter:
-    """Adapter: write JSON lines as relay frames."""
+    """Adapter: write JSON lines as relay frames. Sends are serialized:
+    the websockets library forbids concurrent send() calls, and two
+    overlapping broadcasts would otherwise kill the connection."""
 
     def __init__(self, ws) -> None:
         self.ws = ws
         self._buffer = b""
         self._closed = False
+        self._lock = asyncio.Lock()
 
     def write(self, data: bytes) -> None:
         self._buffer += data
 
     async def drain(self) -> None:
-        data, self._buffer = self._buffer, b""
-        for line in data.split(b"\n"):
-            if line:
-                try:
-                    await self.ws.send(line.decode())
-                except Exception:  # noqa: BLE001
-                    self._closed = True
-                    raise ConnectionError("relay send failed")
+        async with self._lock:
+            data, self._buffer = self._buffer, b""
+            for line in data.split(b"\n"):
+                if line:
+                    try:
+                        await self.ws.send(line.decode())
+                    except Exception:  # noqa: BLE001
+                        self._closed = True
+                        raise ConnectionError("relay send failed")
 
     def is_closing(self) -> bool:
         return self._closed

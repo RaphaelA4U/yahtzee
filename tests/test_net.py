@@ -331,3 +331,157 @@ async def test_client_keeps_receiving_after_lobby_handover():
         assert app.screen.game.turn.dice == [6, 6, 6, 6, 6]
         app.screen.client.close()
     await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_host_screen_streams_to_relay_client():
+    """Regression: the host's broadcasts must keep reaching a client that
+    joined THROUGH THE RELAY, also when broadcasts overlap (websocket
+    sends are serialized now)."""
+    import sys
+
+    sys.path.insert(0, "relay")
+    from aiohttp.test_utils import TestServer
+    from relay import make_app
+
+    from yahtzee_app.ui.app import GameConfig, HostLobbyScreen, OnlineHostScreen, YahtzeeApp
+
+    relay_server = TestServer(make_app())
+    await relay_server.start_server()
+    relay_url = f"ws://127.0.0.1:{relay_server.port}/ws"
+
+    import yahtzee_app.config as cfg
+
+    settings = cfg.load_settings()
+    settings.update({"n_bots": 0, "n_games": 1, "speed": "instant", "player_name": "Hosty"})
+    cfg.save_settings(settings)
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(HostLobbyScreen())
+        await pilot.pause(0.3)
+        lobby = app.screen
+        # Point the lobby's relay slots at the local test relay.
+        for _ in range(50):
+            if getattr(lobby.server, "relay", None) is not None:
+                break
+            await pilot.pause(0.1)
+        lobby.server.relay.stop()
+        room = net.make_room_code()
+        lobby.room = room
+        lobby.server.relay = net.RelaySlots(lobby.server, room, relay=relay_url)
+        app.run_worker(lobby.server.relay.run(), exclusive=False)
+
+        client = net.GameClient(room, "Guest", relay=relay_url)
+        task = asyncio.create_task(client.run())
+        for _ in range(80):
+            await pilot.pause(0.1)
+            if lobby.server.seats:
+                break
+        assert lobby.server.seats and lobby.server.seats[0].name == "Guest"
+
+        lobby.action_start()
+        await pilot.pause(0.5)
+        screen = app.screen
+        assert isinstance(screen, OnlineHostScreen)
+        screen.settings["speed"] = "instant"
+
+        # Host plays: every step broadcasts; overlapping syncs must not
+        # drop the relay seat.
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        option = screen.human.card.score_option(12, screen.game.turn.counts())
+        screen._score(screen.human, option)
+        await pilot.pause(0.8)
+
+        assert lobby.server.seats[0].connected, "relay seat was dropped"
+        states = []
+        while not client.events.empty():
+            kind, payload = client.events.get_nowait()
+            if kind == "msg" and payload.get("t") == "state":
+                states.append(payload["state"])
+        assert len(states) >= 2, f"client got {len(states)} states"
+        # The last state must show the host's scored box.
+        assert states[-1]["players"][0]["boxes"][12] is not None
+        client.close()
+        await lobby.server.stop()
+        task.cancel()
+        await relay_server.close()
+
+
+@pytest.mark.asyncio
+async def test_host_screen_streams_to_relay_client():
+    """Regression: the host's broadcasts must keep reaching a client that
+    joined THROUGH THE RELAY, also when broadcasts overlap (websocket
+    sends are serialized now)."""
+    import sys
+
+    sys.path.insert(0, "relay")
+    from aiohttp.test_utils import TestServer
+    from relay import make_app
+
+    from yahtzee_app.ui.app import HostLobbyScreen, OnlineHostScreen, YahtzeeApp
+
+    relay_server = TestServer(make_app())
+    await relay_server.start_server()
+    relay_url = f"ws://127.0.0.1:{relay_server.port}/ws"
+
+    import yahtzee_app.config as cfg
+
+    settings = cfg.load_settings()
+    settings.update({"n_bots": 0, "n_games": 1, "speed": "instant", "player_name": "Hosty"})
+    cfg.save_settings(settings)
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(HostLobbyScreen())
+        await pilot.pause(0.3)
+        lobby = app.screen
+        for _ in range(50):
+            if getattr(lobby.server, "relay", None) is not None:
+                break
+            await pilot.pause(0.1)
+        # Point the lobby's relay slots at the local test relay.
+        lobby.server.relay.stop()
+        room = net.make_room_code()
+        lobby.room = room
+        lobby.server.relay = net.RelaySlots(lobby.server, room, relay=relay_url)
+        app.run_worker(lobby.server.relay.run(), exclusive=False)
+
+        client = net.GameClient(room, "Guest", relay=relay_url)
+        task = asyncio.create_task(client.run())
+        for _ in range(80):
+            await pilot.pause(0.1)
+            if lobby.server.seats:
+                break
+        assert lobby.server.seats and lobby.server.seats[0].name == "Guest"
+
+        lobby.action_start()
+        await pilot.pause(0.5)
+        screen = app.screen
+        assert isinstance(screen, OnlineHostScreen)
+        screen.settings["speed"] = "instant"
+
+        # Host plays: every step broadcasts; overlapping syncs must not
+        # drop the relay seat.
+        await pilot.press("r")
+        await pilot.pause(0.5)
+        option = screen.human.card.score_option(12, screen.game.turn.counts())
+        screen._score(screen.human, option)
+        await pilot.pause(0.8)
+
+        assert lobby.server.seats[0].connected, "relay seat was dropped"
+        states = []
+        while not client.events.empty():
+            kind, payload = client.events.get_nowait()
+            if kind == "msg" and payload.get("t") == "state":
+                states.append(payload["state"])
+        assert len(states) >= 2, f"client got {len(states)} states"
+        # The last state must show the host's scored box.
+        assert states[-1]["players"][0]["boxes"][12] is not None
+        client.close()
+        await lobby.server.stop()
+        task.cancel()
+        await relay_server.close()

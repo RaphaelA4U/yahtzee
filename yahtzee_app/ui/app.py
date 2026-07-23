@@ -2828,25 +2828,27 @@ class JoinLobbyScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(" Join online game", id="page-title")
         with Vertical(id="lobby-box"):
+            yield Static(
+                "[b]Room code[/b] [dim](6 letters, from the host)[/dim] or a "
+                "direct address [dim](ip:5333)[/dim]:",
+                classes="lobby-label",
+                markup=True,
+            )
+            yield Input(placeholder="e.g. 8SLBGL", id="join-address")
             yield Static("Your name:", classes="lobby-label")
-            yield Input(value=net.player_name() or "", id="join-name")
-            yield Static("Host address (ip:port or name:port):", classes="lobby-label")
-            yield Input(placeholder="ip:5333, host:5333, or a relay code", id="join-address")
+            yield Input(value=net.player_name() or "", placeholder="e.g. Raphael", id="join-name")
             yield Static("", id="join-status", markup=True)
         yield ActionBar([("enter connect", "connect"), ("esc back", "leave")], id="join-footer")
 
     def on_mount(self) -> None:
         self.client: net.GameClient | None = None
         self._handed_over = False
-        if not self.query_one("#join-name", Input).value:
-            self.query_one("#join-name", Input).focus()
-        else:
-            self.query_one("#join-address", Input).focus()
+        self.query_one("#join-address", Input).focus()
 
     @on(Input.Submitted)
     def _submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "join-name":
-            self.query_one("#join-address", Input).focus()
+        if event.input.id == "join-address" and not self.query_one("#join-name", Input).value:
+            self.query_one("#join-name", Input).focus()
         else:
             self.action_connect()
 
@@ -2861,9 +2863,14 @@ class JoinLobbyScreen(Screen):
             return
         name = self.query_one("#join-name", Input).value.strip()[:16]
         address = self.query_one("#join-address", Input).value.strip()
+        # Safety: a room code typed into the name field is clearly the code.
+        if not address and net.looks_like_code(name):
+            name, address = "", name
+            self.query_one("#join-address", Input).value = address
+            self.query_one("#join-name", Input).value = ""
         if not name or not address:
             self.query_one("#join-status", Static).update(
-                "[red]Fill in a name and an address first.[/red]"
+                "[red]Fill in the code (or address) and a name first.[/red]"
             )
             return
         net.save_player_name(name)
@@ -3126,7 +3133,12 @@ class OnlineClientScreen(GameScreen):
                     self.log_write("[green]Reconnected.[/green]")
                 self.refresh_status()
             elif kind == "msg" and payload.get("t") == "state":
-                self._apply_state(payload.get("state") or {}, payload.get("events") or [])
+                try:
+                    self._apply_state(
+                        payload.get("state") or {}, payload.get("events") or []
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.log_write(f"[red]State update failed: {exc}[/red]")
 
     def _apply_state(self, snap: dict, events: list[str]) -> None:
         if not snap:
