@@ -1,8 +1,9 @@
 services:
-  yahtzee-relay:
+  relay:
     image: python:3.12-slim
-    container_name: yahtzee-relay
+    container_name: relay
     restart: unless-stopped
+    # Game-agnostic pairing relay (reused by other minigames too).
     # Fetches relay.py from the yahtzee repo at start, so a container
     # restart picks up the latest relay code. No volumes, no state.
     command: >

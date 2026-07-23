@@ -1,12 +1,14 @@
-"""Yahtzee rendezvous relay: a dumb WebSocket pairing pipe.
+"""relay.rustema.app: a dumb, game-agnostic WebSocket pairing pipe.
 
-Both the host and the joining player connect OUTBOUND to this relay (so
-CGNAT and firewalls do not matter). The host parks spare connections per
-room code; every joiner is paired with one, and from then on the relay
-forwards frames verbatim in both directions. It stores nothing, knows
-nothing about Yahtzee, and keeps no state beyond the in-memory rooms.
+Both sides of a connection dial OUT to this relay (so CGNAT and
+firewalls do not matter). A host parks spare connections per room code;
+every joiner is paired with one, and from then on the relay forwards
+frames verbatim in both directions. It stores nothing, knows nothing
+about the traffic it carries, and keeps no state beyond the in-memory
+rooms - which makes it reusable for any minigame that needs a
+rendezvous, not just Yahtzee.
 
-Deployed at relay.rustema.app (see docker-compose.yml next to this file).
+Deployed via docker-compose.yml next to this file.
 """
 
 from __future__ import annotations

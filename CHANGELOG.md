@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.6.1
+
+- The relay is now generic (service and container simply named "relay"),
+  ready to be reused by other minigames; nothing Yahtzee-specific runs
+  on it.
+
 ## v1.6.0
 
 - ONLINE MULTIPLAYER: host a game from the menu and friends join by
