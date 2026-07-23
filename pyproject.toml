@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yahtzee-tui"
-version = "1.5.1"
+version = "1.6.0"
 description = "Yahtzee in your terminal: mouse, keyboard, and commands, with bots up to a mathematically optimal solver"
 requires-python = ">=3.10"
 dependencies = [
     "textual>=1.0",
     "numpy>=1.26",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "aiohttp>=3.9"]
 
 [project.scripts]
 yahtzee = "yahtzee_app.__main__:main"

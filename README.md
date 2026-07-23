@@ -77,6 +77,19 @@ win-chance calculation in the final round (via the same dice DP, run on a
 success indicator) and variance control in the round before, based on the
 projected scores of your opponents.
 
+### Online multiplayer
+
+Host a game from the menu; friends pick "Join online game" and enter one
+of the addresses your lobby shows, or just the 6-letter relay code.
+Works over LAN, Tailscale/ZeroTier, and the internet: the host tries
+UPnP to open a port automatically, and a tiny public relay
+(relay.rustema.app, see `relay/`) covers the rest, including both
+players behind CGNAT. No accounts and no database: your device gets a
+one-time random ID, your seat survives reconnects, and a bot fills in
+if you stay away for 60 seconds. Player statistics are exchanged
+peer-to-peer in the lobby; the relay pairs and pipes, nothing is stored
+centrally. Bots fill the remaining seats at the host's table.
+
 ### Matches
 
 A match is 1 to 6 games (set Games in the menu). Every player has their

@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.6.0
+
+- ONLINE MULTIPLAYER: host a game from the menu and friends join by
+  address, over LAN, Tailscale/ZeroTier, or the internet (the host tries
+  UPnP automatically; otherwise forward a TCP port). Host-authoritative,
+  no accounts, no servers: your device gets a one-time random ID, seats
+  survive reconnects, and a bot fills in if someone stays away for 60s.
+  Player stats are shared peer-to-peer in the lobby, nothing is stored
+  centrally. Bots fill the remaining seats.
+- Continue last game brings your full log back and marks where you
+  continued; round headers only appear together with the round's first
+  line, never dangling.
+- Cards wrap into rows (2 or 3 per row depending on card width) with an
+  invisible vertical scroll, so every card is reachable again; table
+  size maxes at 5 bots.
+- Footer actions are clickable on every screen, the menu scrollbar is
+  hidden, and the "Free joker" arrow can no longer wrap.
+- More breathing room in the log, and statistics no longer mention
+  older-version matches.
+- A public relay (relay.rustema.app) as the third transport rung, for
+  when both players sit behind CGNAT: the host lobby shows a 6-letter
+  code, the joiner just types it. The relay pairs and pipes; it stores
+  nothing.
+- AUTO retrained in a bigger arena (24 configs, confirmed on 20,000
+  matches): endgame play now gives up nothing when ahead; the win-aware
+  edge against a perfect opponent is small but free (+0.4% at the same
+  254.5 average).
+
 ## v1.5.1
 
 - Bot name pools grown to 100 female + 100 male US/UK names.

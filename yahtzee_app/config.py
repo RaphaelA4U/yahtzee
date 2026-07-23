@@ -124,13 +124,11 @@ def _line(label: str, games: list[dict]) -> str:
 def stats_summary() -> list[str]:
     stats = load_stats()
     games = stats.get("games_v2", [])
-    legacy = len(stats.get("games", []))
     if not games:
-        lines = ["No games recorded yet (every finished game counts, even"]
-        lines.append("if you abandon the match afterwards).")
-        if legacy:
-            lines.append(f"[dim]{legacy} matches from older versions not shown.[/dim]")
-        return lines
+        return [
+            "No games recorded yet (every finished game counts, even",
+            "if you abandon the match afterwards).",
+        ]
     n = len(games)
     wins = sum(1 for g in games if g.get("won"))
     scores = [g.get("your_score", 0) for g in games]
@@ -171,6 +169,4 @@ def stats_summary() -> list[str]:
         for k, v in sorted(by_rules.items()):
             lines.append(_line(k, v))
 
-    if legacy:
-        lines += ["", f"[dim]Plus {legacy} matches recorded by older versions.[/dim]"]
     return lines

@@ -67,6 +67,7 @@ from ..game import (
     Scorecard,
 )
 from ..hints import hint_for
+from .. import net
 from ..update import REPO_DIR, check_and_update, current_version
 
 MODES = ["normal", "hints", "coach", "auto"]
@@ -722,8 +723,14 @@ class AsciiMenu(Widget, can_focus=True):
         return [i for i in self.items if i.visible]
 
     def get_content_width(self, container, viewport) -> int:
-        lines = self.render().plain.splitlines()
-        return max((len(line) for line in lines), default=10) + 1
+        width = 10
+        for item in self.items:
+            if item.kind == "choice":
+                widest = max((len(lbl) for lbl, _ in item.choices), default=0)
+                width = max(width, 2 + 12 + 2 + widest + 2)
+            else:
+                width = max(width, 2 + len(item.label))
+        return width + 1
 
     def get_content_height(self, container, viewport, width) -> int:
         return len(self.visible_items())
@@ -839,10 +846,16 @@ class TextPage(Screen):
         yield Static(f" {self.title_text}", id="page-title", markup=True)
         with VerticalScroll(id="page-scroll"):
             yield Static(self.body, id="page-body", markup=True)
-        yield Static(" up/down scroll   esc back", id="page-footer")
+        yield ActionBar(
+            [("up/down scroll", None), ("esc back", "back")], id="page-footer"
+        )
 
     def on_mount(self) -> None:
         self.query_one("#page-scroll", VerticalScroll).focus()
+
+    def on_action_bar_invoked(self, event) -> None:
+        if event.action == "back":
+            self.app.pop_screen()
 
     def action_go_back(self) -> None:
         self.app.pop_screen()
@@ -892,6 +905,14 @@ HELP_TEXT = f"""[b]YAHTZEE v{__version__}[/b]
            score and a review of your worst mistakes
   [b]AUTO[/b]    the solver plays your turns automatically
 
+[b u]Online multiplayer[/b u]
+Host online game shares addresses for LAN, Tailscale/ZeroTier, or the
+internet (UPnP when your router allows it), plus a 6-letter relay code
+that works from anywhere; friends use Join online game with an address
+or just the code. The host's menu settings decide bots, games, and
+rules. Seats survive reconnects; a bot fills in after 60s away. Online
+you play NORMAL or HINTS (COACH/AUTO need the local engine).
+
 [b u]The match[/b u]
 A match is 1 to 6 games; every game fills one column on your card, like
 the classic paper pad. The MATCH row keeps the running total; the highest
@@ -910,7 +931,7 @@ in the final round, variance control just before. Hints always show the
 standings-aware advice near the end.
 
 [b u]Opponents[/b u]
-  1 to 7 bots; official Yahtzee has no player cap.
+  1 to 5 bots; official Yahtzee has no player cap.
   [b]Easy[/b]     {DIFFICULTY_INFO['easy']}
   [b]Medium[/b]   {DIFFICULTY_INFO['medium']}
   [b]Hard[/b]     {DIFFICULTY_INFO['hard']}
@@ -959,6 +980,8 @@ MENU_INFO = {
     "continue": "Reopen your last game right where it stopped.",
     "view": "Look back at the final cards of your last match.",
     "new": "Start a new match with the settings below.",
+    "host": "Host an online game: friends join over LAN, Tailscale, or the internet.",
+    "join": "Join a friend's online game by address (host:port).",
     "bots": "Number of computer opponents at the table.",
     "games": "Games per match; every game fills one column on your card.",
     "hints": "Solver advice after every roll (switch anytime with shift+tab).",
@@ -1006,8 +1029,8 @@ class MenuScreen(Screen):
             MenuItem("new", "New game"),
             MenuItem(
                 "bots", "Opponents", "choice",
-                [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 8)],
-                index=max(0, min(6, n_bots - 1)),
+                [(f"{n} bot{'s' if n > 1 else ''}", n) for n in range(1, 6)],
+                index=max(0, min(4, n_bots - 1)),
             ),
             MenuItem(
                 "difficulty", "Difficulty", "choice",
@@ -1029,6 +1052,8 @@ class MenuScreen(Screen):
                 [("off", "normal"), ("on", "hints")],
                 index=1 if settings.get("mode") == "hints" else 0,
             ),
+            MenuItem("host", "Host online game"),
+            MenuItem("join", "Join online game"),
             MenuItem("whatsnew", "What's new"),
             MenuItem("help", "Help"),
             MenuItem("stats", "Statistics"),
@@ -1044,7 +1069,16 @@ class MenuScreen(Screen):
                 yield Static(f"v{__version__}", id="menu-version")
                 yield AsciiMenu(items, id="menu")
                 yield Static("", id="menu-info", markup=True)
-                yield Static(" ↑↓ select  ←→ change  enter confirm", id="menu-footer")
+                yield ActionBar(
+                    [
+                        ("↑↓ select", None),
+                        ("←→ change", None),
+                        ("enter confirm", "activate"),
+                        ("? help", "help"),
+                        ("q quit", "quit"),
+                    ],
+                    id="menu-footer",
+                )
 
     def on_mount(self) -> None:
         self._refresh_continue()
@@ -1124,6 +1158,10 @@ class MenuScreen(Screen):
                 n_games=int(menu.item("games").value),
             )
             app.start_game(config)
+        elif event.item_id == "host":
+            app.push_screen(HostLobbyScreen())
+        elif event.item_id == "join":
+            app.push_screen(JoinLobbyScreen())
         elif event.item_id == "whatsnew":
             app.push_screen(TextPage("What's new", changelog_text()))
         elif event.item_id == "help":
@@ -1138,6 +1176,14 @@ class MenuScreen(Screen):
 
     def action_quit_app(self) -> None:
         self.app.exit()
+
+    def on_action_bar_invoked(self, event) -> None:
+        if event.action == "activate":
+            self.query_one(AsciiMenu).action_activate()
+        elif event.action == "help":
+            self.action_help()
+        elif event.action == "quit":
+            self.app.exit()
 
 
 # ---------------------------------------------------------------------------
@@ -1245,6 +1291,7 @@ class GameScreen(Screen):
         super().__init__()
         self.config = config
         self.mode = config.mode
+        self.local_idx = 0  # which seat is the local player (online: varies)
         self.settings = load_settings()
         self.win_mode = bool(self.settings.get("win_mode", True))
         self.n_games = max(1, min(6, config.n_games))
@@ -1271,6 +1318,9 @@ class GameScreen(Screen):
         self._auto_timer = None
         self._last_hint_key = None
         self._assists: set[str] = set()
+        self._pending_header: str | None = None
+        self._log_history: list[str] = []
+        self._restored_log: list[str] = snapshot.get("log", []) if snapshot else []
 
     # -- resume ------------------------------------------------------------
 
@@ -1346,6 +1396,7 @@ class GameScreen(Screen):
                 for p in self.players
             ],
             "coach": [vars(d) for d in self.coach.decisions],
+            "log": self._log_history[-300:],
         }
 
     def checkpoint(self) -> None:
@@ -1367,38 +1418,56 @@ class GameScreen(Screen):
                     yield RichLog(id="log", markup=True, wrap=True, auto_scroll=True)
                     yield Input(placeholder="/help for commands", id="command")
                 with Vertical(id="right-column"):
-                    with HorizontalScroll(id="cards-row"):
-                        for i, p in enumerate(self.players):
-                            yield PlayerCard(p, self.n_games, interactive=(i == 0))
+                    # Cards wrap into rows; how many fit side by side depends
+                    # on how wide a card is (more games = wider columns).
+                    per_row = 3 if self.n_games == 1 else (2 if self.n_games <= 4 else 1)
+                    with VerticalScroll(id="cards-scroll"):
+                        for start in range(0, len(self.players), per_row):
+                            with Horizontal(classes="cards-row"):
+                                for i in range(start, min(start + per_row, len(self.players))):
+                                    yield PlayerCard(
+                                        self.players[i],
+                                        self.n_games,
+                                        interactive=(i == self.local_idx),
+                                    )
                     yield Static("", id="cards-more", markup=True)
             yield ActionBar(FOOTER_PLAYING, id="footer-keys")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
-        names = ", ".join(
-            f"[{p.color}]{p.display_name}[/{p.color}] ({p.difficulty})"
-            for p in self.players
-            if p.is_bot
-        )
-        if self._view_only:
+        if self._restored_log:
+            # Continue/view: bring the old log back exactly as it was.
+            for line in self._restored_log:
+                log.write(line)
+            self._log_history = list(self._restored_log)
+            log.scroll_end(animate=False)
+            if not self._view_only:
+                self.log_write("")
+                self.log_write("[dim]── continued ──[/dim]")
+        elif self._view_only:
             log.write("[b]Your last match.[/b] Press n for a new one, m for the menu.")
         else:
-            log.write(f"[b]New match![/b] Opponents: {names}.")
-            log.write(
+            names = ", ".join(
+                f"[{p.color}]{p.display_name}[/{p.color}] ({p.difficulty})"
+                for p in self.players
+                if p.is_bot
+            )
+            self.log_write(f"[b]New match![/b] Opponents: {names}.")
+            self.log_write(
                 f"Mode [b]{RULESET_LABELS[self.config.rules]}[/b] · "
                 f"{self.n_games} game{'s' if self.n_games > 1 else ''} per match"
             )
-            log.write("Type [b]/help[/b] or press [b]?[/b] for all keys and commands.")
+            self.log_write("Type [b]/help[/b] or press [b]?[/b] for all keys and commands.")
             if self.mode == "hints":
-                log.write(f"[{HINT}]Hint mode is on.[/{HINT}]")
+                self.log_write(f"[{HINT}]Hint mode is on.[/{HINT}]")
             if self.mode == "coach":
-                log.write(f"[{HINT}]Coach mode is on: every decision gets a verdict.[/{HINT}]")
+                self.log_write(f"[{HINT}]Coach mode is on: every decision gets a verdict.[/{HINT}]")
         self.query_one(DiceRow).focus()
         self.refresh_all()
         if self._view_only:
             self._recorded = True
             self._final_accuracy = self.coach.accuracy() if self.coach.decisions else None
-            self.finish_match(record=False)
+            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
         else:
             self.call_after_refresh(self.start_turn)
 
@@ -1406,23 +1475,43 @@ class GameScreen(Screen):
 
     @property
     def human(self) -> Player:
-        return self.players[0]
+        return self.players[self.local_idx]
 
     def human_card_widget(self) -> PlayerCard:
-        return self.query(PlayerCard).first()
+        return next(w for w in self.query(PlayerCard) if w.player is self.human)
 
     def is_human_turn(self) -> bool:
-        return not self.game.finished and not self.game.current.is_bot
+        return not self.game.finished and self.game.current is self.human
 
     def human_may_act(self) -> bool:
         return self.is_human_turn() and self.mode != "auto" and not self._rolling
 
-    def log_write(self, text: str) -> None:
+    def _remote_turn(self, player: Player) -> None:
+        """Hook: online screens handle turns of non-local humans."""
+
+    def _net_share(self, text: str) -> None:
+        """Hook: online host forwards these log lines to the clients."""
+
+    def _net_sync(self) -> None:
+        """Hook: online host broadcasts the game state after changes."""
+
+    def log_write(self, text: str, share: bool = False) -> None:
         if not self.is_mounted:
             return
+        if share:
+            self._net_share(text)
         try:
             log = self.query_one("#log", RichLog)
+            # A round header only appears together with the round's first
+            # content line, never dangling on its own.
+            if self._pending_header and text:
+                for line in ("", self._pending_header):
+                    log.write(line)
+                    self._log_history.append(line)
+                self._pending_header = None
             log.write(text)
+            self._log_history.append(text)
+            self._log_history = self._log_history[-300:]
             log.scroll_end(animate=False)
         except NoMatches:
             pass
@@ -1479,7 +1568,11 @@ class GameScreen(Screen):
         roll.rolls_left = turn.rolls_left
         p = self.game.current
         lines = []
-        if not p.is_bot and self.mode == "auto":
+        if not p.is_bot and p is not self.human:
+            lines.append(
+                f"[{p.color}]{p.display_name}[/{p.color}] [dim]is playing...[/dim]"
+            )
+        elif not p.is_bot and self.mode == "auto":
             if self._auto_count > 0:
                 lines.append(
                     f"[{WINC}]AUTO starts in {self._auto_count}s[/{WINC}]\n"
@@ -1559,10 +1652,10 @@ class GameScreen(Screen):
                 preview if widget.player is self.human else {},
                 match_over=self.game.finished,
             )
-        row = self.query_one("#cards-row", HorizontalScroll)
+        scroll = self.query_one("#cards-scroll", VerticalScroll)
         more = self.query_one("#cards-more", Static)
-        if row.virtual_size.width > row.size.width > 0:
-            more.update("[dim]< scroll >  more cards[/dim]")
+        if scroll.virtual_size.height > scroll.size.height > 0:
+            more.update("[dim]v  scroll for more cards[/dim]")
         else:
             more.update("")
 
@@ -1582,13 +1675,16 @@ class GameScreen(Screen):
         if self.game.current_idx == 0 and self._last_logged != (self.game_no, self.game.round):
             self._last_logged = (self.game_no, self.game.round)
             game_part = f"Game {self.game_no} · " if self.n_games > 1 else ""
-            self.log_write("")
-            self.log_write(f"[dim]── {game_part}Round {self.game.round}/13 " + "─" * 18 + "[/dim]")
+            self._pending_header = (
+                f"[dim]── {game_part}Round {self.game.round}/13 " + "─" * 18 + "[/dim]"
+            )
         self.refresh_all()
         if p.is_bot:
             self._turn_worker = self.run_worker(
                 self._auto_turn(self.bots[p.name], p), exclusive=False
             )
+        elif p is not self.human:
+            self._remote_turn(p)
         elif self.mode == "auto":
             self._turn_worker = self.run_worker(
                 self._auto_turn(make_bot("optimal", self.config.rules), p),
@@ -1634,6 +1730,7 @@ class GameScreen(Screen):
         finally:
             self._rolling = False
         self.refresh_all()
+        self._net_sync()
 
     async def _auto_turn(self, bot, player: Player) -> None:
         """A bot's turn, or the human's turn in AUTO mode."""
@@ -1700,7 +1797,7 @@ class GameScreen(Screen):
             if self.mode == "coach":
                 self.log_write(f"[b {HINT}]COACH[/b {HINT}] {verdict_line(decision)}")
         player.card.apply(option, counts)
-        name = prefix if prefix in ("AUTO", "You") else player.display_name
+        name = prefix if prefix == "AUTO" else player.display_name
         name_style = f"bold {player.color}" if player.color else "bold"
         extra = f" [{HINT}]+100 bonus![/{HINT}]" if option.extra_bonus else ""
         joker = " [dim](joker)[/dim]" if option.is_joker else ""
@@ -1708,10 +1805,12 @@ class GameScreen(Screen):
         pts = f"[b]{option.points}[/b]" if option.points else "[dim]x[/dim]"
         self.log_write(
             f"[{name_style}]{name:<12}[/{name_style}] [dim]({dice_str})[/dim] "
-            f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}"
+            f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}",
+            share=True,
         )
         self.game.advance()
         self.refresh_all()
+        self._net_sync()
         self.set_timer(0.05, self.start_turn)
 
     def _record_current_game(self) -> None:
@@ -1752,20 +1851,22 @@ class GameScreen(Screen):
         """One game finished: next column, or wrap up the match."""
         if self.game_no < self.n_games:
             self._record_current_game()
+            self.log_write("")
             standings = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
             line = "  ·  ".join(
                 f"[{p.color}]{p.display_name}[/{p.color}] [b]{p.match_total()}[/b]"
                 for p in standings
             )
-            self.log_write(f"[b]Game {self.game_no} done.[/b] Standings: {line}")
+            self.log_write(f"[b]Game {self.game_no} done.[/b] Standings: {line}", share=True)
             for p in self.players:
                 p.history.append(p.card)
                 p.card = Scorecard(self.config.rules)
             self.game_no += 1
             self.game = Game(self.players)
-            self.log_write(f"[b]Game {self.game_no} of {self.n_games}![/b]")
+            self.log_write(f"[b]Game {self.game_no} of {self.n_games}![/b]", share=True)
             self.checkpoint()
             self.refresh_all()
+            self._net_sync()
             self.set_timer(1.0, self.start_turn)
         else:
             self.finish_match()
@@ -1787,16 +1888,26 @@ class GameScreen(Screen):
         ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
         winner = ranked[0]
         bar = "=" * 44
+        self.log_write("")
         self.log_write(f"[dim]{bar}[/dim]")
-        if winner.is_bot:
-            self.log_write(f"[b]  MATCH OVER  ·  {winner.display_name} wins[/b]")
-        else:
+        if winner is self.human:
             self.log_write("[b green]  MATCH OVER  ·  You win![/b green]")
+            self._net_share(
+                f"[b green]  MATCH OVER  ·  {winner.display_name} wins![/b green]"
+            )
+        elif winner.is_bot:
+            self.log_write(f"[b]  MATCH OVER  ·  {winner.display_name} wins[/b]", share=True)
+        else:
+            self.log_write(
+                f"[b green]  MATCH OVER  ·  {winner.display_name} wins![/b green]",
+                share=True,
+            )
         for i, p in enumerate(ranked, start=1):
             diff = f" ({p.difficulty})" if p.difficulty else ""
             self.log_write(
                 f"  {i}. [{p.color}]{p.display_name}[/{p.color}]{diff}: "
-                f"[b]{p.match_total()}[/b] points"
+                f"[b]{p.match_total()}[/b] points",
+                share=True,
             )
         if self._final_accuracy is not None:
             self.log_write(
@@ -1804,8 +1915,10 @@ class GameScreen(Screen):
                 f"(press [b]v[/b] for the review)"
             )
         self.log_write(f"[dim]{bar}[/dim]")
+        self.log_write("")
         self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
         self.refresh_all()
+        self._net_sync()
 
     # -- human actions -----------------------------------------------------
 
@@ -1856,6 +1969,7 @@ class GameScreen(Screen):
             return
         turn.toggle_hold(idx)
         self.refresh_dice()
+        self._net_sync()
 
     @on(AsciiDie.Pressed)
     def _die_pressed(self, event: AsciiDie.Pressed) -> None:
@@ -1881,7 +1995,7 @@ class GameScreen(Screen):
         except ValueError as exc:
             self.log_write(f"[dim]{exc}[/dim]")
             return
-        self._score(self.human, option, prefix="You")
+        self._score(self.human, option)
 
     def action_focus_dice(self) -> None:
         self.query_one(DiceRow).focus()
@@ -2093,7 +2207,7 @@ class GameScreen(Screen):
         rules = self.config.rules
         for arg in args:
             if arg.isdigit():
-                n = max(1, min(7, int(arg)))
+                n = max(1, min(5, int(arg)))
             elif arg.lower() in RULESETS:
                 rules = arg.lower()
             else:
@@ -2159,7 +2273,7 @@ class YahtzeeApp(App):
 
     /* Menu */
     #menu-center { align: center middle; height: 1fr; }
-    #menu-box { width: auto; height: auto; max-height: 100%; overflow-y: auto; }
+    #menu-box { width: auto; height: auto; max-height: 100%; overflow-y: auto; scrollbar-size-vertical: 0; }
     #menu-logo { width: auto; }
     #menu-dice { width: auto; margin-top: 1; color: ansi_bright_black; }
     #menu-version { color: ansi_bright_black; margin-top: 1; margin-bottom: 1; }
@@ -2171,7 +2285,7 @@ class YahtzeeApp(App):
     #game-root { height: 1fr; }
     #statusbar { height: 1; }
     #game-columns { height: 1fr; }
-    #left-column { width: 1fr; min-width: 90; padding: 0 1; }
+    #left-column { width: 1fr; min-width: 68; padding: 0 1; }
     #dice-area { height: 10; margin-top: 1; }
     DiceRow { width: 62; height: 10; layout: horizontal; border: blank; }
     DiceRow.attention { border: ascii #875fff; }
@@ -2183,13 +2297,24 @@ class YahtzeeApp(App):
         height: 1fr; margin-top: 1; background: ansi_default;
         scrollbar-size-vertical: 0;
     }
-    #command { border: none; height: 1; padding: 0; background: ansi_default; }
+    #command { border: none; height: 1; padding: 0; margin-top: 1; background: ansi_default; }
     #right-column { width: auto; height: 1fr; }
-    #cards-row { width: auto; height: 1fr; padding: 0; scrollbar-size-horizontal: 0; }
+    #cards-scroll { width: auto; height: 1fr; scrollbar-size-vertical: 0; }
+    .cards-row { width: auto; height: auto; }
     #cards-more { height: 1; color: ansi_bright_black; }
     PlayerCard { width: auto; height: auto; margin-right: 1; border: blank; }
     PlayerCard.attention { border: ascii #875fff; }
     #footer-keys { height: 1; color: ansi_bright_black; }
+
+    /* Online lobbies */
+    #lobby-box { width: auto; height: 1fr; padding: 1 2; }
+    .lobby-label { margin-top: 1; color: ansi_bright_black; }
+    #lobby-box Input { border: none; height: 1; padding: 0; background: ansi_default; max-width: 40; }
+    #lobby-addresses { margin-top: 1; }
+    #lobby-players { margin-top: 1; }
+    #lobby-help { margin-top: 1; }
+    #join-status { margin-top: 1; }
+    #lobby-footer, #join-footer { height: 1; color: ansi_bright_black; }
 
     /* Text pages */
     #page-title { height: 1; text-style: bold; }
@@ -2343,3 +2468,590 @@ def run(no_update: bool = False, initial: dict | None = None, resume: bool = Fal
             sys.executable,
             [sys.executable, "-m", "yahtzee_app", *app._restart_args],
         )
+
+
+# ---------------------------------------------------------------------------
+# Online multiplayer (host-authoritative; see yahtzee_app/net.py)
+# ---------------------------------------------------------------------------
+
+TAKEOVER_SECONDS = 60
+
+
+class HostLobbyScreen(Screen):
+    """Host a game: shows shareable addresses and who has joined."""
+
+    BINDINGS = [Binding("escape", "leave", "Back")]
+
+    def compose(self) -> ComposeResult:
+        yield Static(" Host online game", id="page-title")
+        with Vertical(id="lobby-box"):
+            yield Static("Your name:", classes="lobby-label")
+            yield Input(value=net.player_name() or "Host", id="lobby-name")
+            yield Static("", id="lobby-addresses", markup=True)
+            yield Static("", id="lobby-players", markup=True)
+            yield Static(
+                "[dim]Friends join via: Join online game -> one of the "
+                "addresses above.[/dim]",
+                id="lobby-help",
+                markup=True,
+            )
+        yield ActionBar(
+            [("enter start match", "start"), ("esc back", "leave")], id="lobby-footer"
+        )
+
+    def on_mount(self) -> None:
+        self.server = net.HostServer(net.player_name() or "Host")
+        self._started = False
+        self.query_one("#lobby-players", Static).update("[dim]Waiting for players...[/dim]")
+        self.run_worker(self._boot(), exclusive=False)
+        self.run_worker(self._consume(), exclusive=False)
+
+    async def _boot(self) -> None:
+        try:
+            port = await self.server.start()
+        except OSError as exc:
+            self.query_one("#lobby-addresses", Static).update(
+                f"[red]Could not open a port: {exc}[/red]"
+            )
+            return
+        lines = ["[b]Share one of these addresses:[/b]"]
+        for label, ip in net.local_addresses():
+            lines.append(f"  {ip}:{port}   [dim]{label}[/dim]")
+        lines.append("  [dim]checking internet reachability (UPnP)...[/dim]")
+        lines.append("  [dim]connecting to the relay...[/dim]")
+        self.query_one("#lobby-addresses", Static).update("\n".join(lines))
+        self._upnp(port, lines)
+        self.room = net.make_room_code()
+        self.server.relay = net.RelaySlots(self.server, self.room)
+        self.run_worker(self.server.relay.run(), exclusive=False)
+        self.run_worker(self._relay_status(lines), exclusive=False)
+
+    async def _relay_status(self, lines: list[str]) -> None:
+        for _ in range(80):
+            if self.server.relay.ok is not None:
+                break
+            await asyncio.sleep(0.25)
+        if self.server.relay.ok:
+            lines[-1] = (
+                f"  code [b]{self.room}[/b]   [dim]internet (relay), friends can "
+                f"enter just this code[/dim]"
+            )
+        else:
+            lines[-1] = "  [dim]relay not reachable right now[/dim]"
+        if self.is_mounted:
+            self.query_one("#lobby-addresses", Static).update("\n".join(lines))
+
+    @work(thread=True, exclusive=True, group="upnp")
+    def _upnp(self, port: int, lines: list[str]) -> None:
+        public = net.try_upnp_map(port)
+        idx = next(i for i, l in enumerate(lines) if "UPnP" in l)
+        if public:
+            lines[idx] = f"  {public}:{port}   [dim]internet (UPnP)[/dim]"
+        else:
+            lines[idx] = (
+                "  [dim]no UPnP; use the relay code, Tailscale/ZeroTier, or "
+                f"forward TCP {port}[/dim]"
+            )
+        if self.is_mounted:
+            self.app.call_from_thread(
+                self.query_one("#lobby-addresses", Static).update, "\n".join(lines)
+            )
+
+    async def _consume(self) -> None:
+        while not self._started:
+            kind, *rest = await self.server.events.get()
+            if kind in ("join", "leave"):
+                self._render_players()
+
+    def _render_players(self) -> None:
+        lines = ["", "[b]At the table:[/b]", f"  {net.player_name() or 'Host'} [dim](you, host)[/dim]"]
+        for seat in self.server.seats:
+            state = "" if seat.connected else "  [red]disconnected[/red]"
+            st = seat.stats or {}
+            stats = (
+                f"[dim]{st.get('games', 0)} games · avg {st.get('avg', 0)}[/dim]"
+                if st.get("games")
+                else "[dim]no stats yet[/dim]"
+            )
+            lines.append(f"  {seat.name}  {stats}{state}")
+        settings = load_settings()
+        lines.append(
+            f"\n[dim]Settings from the menu: {settings.get('n_bots', 2)} bots "
+            f"({settings.get('difficulty', 'medium')}), "
+            f"{settings.get('n_games', 3)} games, {settings.get('ruleset', 'official')}."
+            f" Bots fill the remaining seats.[/dim]"
+        )
+        self.query_one("#lobby-players", Static).update("\n".join(lines))
+
+    @on(Input.Submitted, "#lobby-name")
+    def _name_submitted(self) -> None:
+        self.action_start()
+
+    def on_action_bar_invoked(self, event) -> None:
+        if event.action == "start":
+            self.action_start()
+        elif event.action == "leave":
+            self.action_leave()
+
+    def action_start(self) -> None:
+        if self._started:
+            return
+        name = self.query_one("#lobby-name", Input).value.strip()[:16] or "Host"
+        net.save_player_name(name)
+        self.server.host_name = name
+        self._started = True
+        self.server.started = True
+        settings = load_settings()
+        n_bots = max(0, int(settings.get("n_bots", 2)) - len(self.server.seats))
+        config = GameConfig(
+            difficulties=[str(settings.get("difficulty", "medium"))] * n_bots,
+            mode="normal",
+            rules=str(settings.get("ruleset", "official")),
+            n_games=int(settings.get("n_games", 3)),
+        )
+        app = self.app
+        assert isinstance(app, YahtzeeApp)
+        app.pop_screen()
+        app.push_screen(OnlineHostScreen(config, self.server))
+
+    def action_leave(self) -> None:
+        if not self._started:
+            self.run_worker(self.server.stop(), exclusive=False)
+        self.app.pop_screen()
+
+
+class JoinLobbyScreen(Screen):
+    """Join a friend's game by address."""
+
+    BINDINGS = [Binding("escape", "leave", "Back")]
+
+    def compose(self) -> ComposeResult:
+        yield Static(" Join online game", id="page-title")
+        with Vertical(id="lobby-box"):
+            yield Static("Your name:", classes="lobby-label")
+            yield Input(value=net.player_name() or "", id="join-name")
+            yield Static("Host address (ip:port or name:port):", classes="lobby-label")
+            yield Input(placeholder="ip:5333, host:5333, or a relay code", id="join-address")
+            yield Static("", id="join-status", markup=True)
+        yield ActionBar([("enter connect", "connect"), ("esc back", "leave")], id="join-footer")
+
+    def on_mount(self) -> None:
+        self.client: net.GameClient | None = None
+        self._handed_over = False
+        if not self.query_one("#join-name", Input).value:
+            self.query_one("#join-name", Input).focus()
+        else:
+            self.query_one("#join-address", Input).focus()
+
+    @on(Input.Submitted)
+    def _submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "join-name":
+            self.query_one("#join-address", Input).focus()
+        else:
+            self.action_connect()
+
+    def on_action_bar_invoked(self, event) -> None:
+        if event.action == "connect":
+            self.action_connect()
+        elif event.action == "leave":
+            self.action_leave()
+
+    def action_connect(self) -> None:
+        if self.client is not None:
+            return
+        name = self.query_one("#join-name", Input).value.strip()[:16]
+        address = self.query_one("#join-address", Input).value.strip()
+        if not name or not address:
+            self.query_one("#join-status", Static).update(
+                "[red]Fill in a name and an address first.[/red]"
+            )
+            return
+        net.save_player_name(name)
+        self.client = net.GameClient(address, name)
+        self.query_one("#join-status", Static).update("Connecting...")
+        self.run_worker(self.client.run(), exclusive=False)
+        self.run_worker(self._consume(), exclusive=False)
+
+    async def _consume(self) -> None:
+        status = self.query_one("#join-status", Static)
+        while not self._handed_over:
+            kind, payload = await self.client.events.get()
+            if kind == "net":
+                if payload == "up":
+                    status.update("[green]Connected.[/green] Waiting for the host to start...")
+                elif payload == "down":
+                    status.update("[red]Connection lost, retrying...[/red]")
+                elif str(payload).startswith("refused"):
+                    reason = str(payload).split(":", 1)[1]
+                    text = {
+                        "full": "That table is full.",
+                        "started": "That match has already started.",
+                        "version": "Host runs a different app version; both should update.",
+                    }.get(reason, f"Connection refused ({reason}).")
+                    status.update(f"[red]{text}[/red]")
+                    self.client = None
+                    return
+            elif kind == "msg":
+                if payload.get("t") == "state" and payload.get("state"):
+                    self._handed_over = True
+                    app = self.app
+                    assert isinstance(app, YahtzeeApp)
+                    app.pop_screen()
+                    app.push_screen(OnlineClientScreen(self.client, payload["state"]))
+                    return
+
+    def action_leave(self) -> None:
+        if self.client is not None and not self._handed_over:
+            self.client.close()
+        self.app.pop_screen()
+
+
+class OnlineHostScreen(GameScreen):
+    """The host runs the real game; remote players act through the server."""
+
+    def __init__(self, config: GameConfig, server: net.HostServer) -> None:
+        super().__init__(config)
+        self.server = server
+        # Insert the remote humans between the host and the bots.
+        host = self.players[0]
+        host.name = server.host_name
+        used_colors = {p.color for p in self.players}
+        free = [c for c in PLAYER_COLOR_POOL if c not in used_colors]
+        remotes = []
+        self._uuid_by_player: dict[int, str] = {}
+        for i, seat in enumerate(server.seats):
+            color = free[i % len(free)] if free else PLAYER_COLOR_POOL[0]
+            remotes.append(
+                Player(seat.name, is_bot=False, card=Scorecard(config.rules), color=color)
+            )
+        self.players = [host] + remotes + self.players[1:]
+        for idx, player in enumerate(self.players):
+            for seat in server.seats:
+                if player.name == seat.name and not player.is_bot and idx != 0:
+                    self._uuid_by_player[idx] = seat.uuid
+        self.game = Game(self.players, seed=config.seed)
+        self._takeover: set[str] = set()
+        self._share_buffer: list[str] = []
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.run_worker(self._consume(), exclusive=False)
+        self.log_write(
+            "[b]Online match![/b] You are hosting; your game continues even "
+            "if someone drops (a bot fills in after "
+            f"{TAKEOVER_SECONDS}s).",
+        )
+        self._net_sync()
+
+    def checkpoint(self) -> None:
+        pass  # online matches are not saved/resumed (v1)
+
+    def _uuid_of(self, player: Player) -> str | None:
+        for idx, dev in self._uuid_by_player.items():
+            if self.players[idx] is player:
+                return dev
+        return None
+
+    # -- broadcasting ------------------------------------------------------
+
+    def _net_share(self, text: str) -> None:
+        self._share_buffer.append(text)
+
+    def _net_state(self) -> dict:
+        snap = self._snapshot(finished=self._recorded)
+        snap.pop("log", None)
+        snap.pop("coach", None)
+        uuids = []
+        for idx, player in enumerate(self.players):
+            if idx == 0:
+                uuids.append("host")
+            else:
+                uuids.append(self._uuid_by_player.get(idx, ""))
+        snap["uuids"] = uuids
+        return snap
+
+    def _net_sync(self) -> None:
+        events, self._share_buffer = self._share_buffer, []
+        msg = {"t": "state", "state": self._net_state(), "events": events}
+        self.run_worker(self.server.broadcast(msg), exclusive=False)
+
+    # -- remote turns ------------------------------------------------------
+
+    def _remote_turn(self, player: Player) -> None:
+        dev = self._uuid_of(player)
+        seat = self.server.seat_by_uuid(dev) if dev else None
+        if dev in self._takeover or (seat and not seat.connected):
+            if dev not in self._takeover:
+                self._arm_takeover(dev, player)
+            else:
+                self._bot_stand_in(player)
+
+    def _arm_takeover(self, dev: str, player: Player) -> None:
+        self.log_write(
+            f"[{p_c(player)}]{player.display_name}[/{p_c(player)}] is offline; "
+            f"a bot takes over in {TAKEOVER_SECONDS}s if they stay away.",
+            share=True,
+        )
+        self.set_timer(TAKEOVER_SECONDS, lambda: self._maybe_takeover(dev))
+
+    def _maybe_takeover(self, dev: str) -> None:
+        seat = self.server.seat_by_uuid(dev)
+        if seat and seat.connected:
+            return
+        self._takeover.add(dev)
+        idx = next((i for i, d in self._uuid_by_player.items() if d == dev), None)
+        if idx is not None and self.game.current is self.players[idx]:
+            self._bot_stand_in(self.players[idx])
+
+    def _bot_stand_in(self, player: Player) -> None:
+        self._turn_worker = self.run_worker(
+            self._auto_turn(make_bot("optimal", self.config.rules), player),
+            exclusive=False,
+        )
+
+    async def _consume(self) -> None:
+        while self.is_mounted:
+            event = await self.server.events.get()
+            kind = event[0]
+            if kind == "join":
+                seat = self.server.seat_by_uuid(event[1])
+                if seat:
+                    self._takeover.discard(seat.uuid)
+                    self.log_write(f"[green]{seat.name} is back online.[/green]", share=True)
+                    self._net_sync()
+            elif kind == "leave":
+                seat = self.server.seat_by_uuid(event[1])
+                if seat:
+                    self.log_write(f"[red]{seat.name} lost connection.[/red]", share=True)
+                    player = next(
+                        (
+                            self.players[i]
+                            for i, d in self._uuid_by_player.items()
+                            if d == seat.uuid
+                        ),
+                        None,
+                    )
+                    if player is not None and self.game.current is player:
+                        self._arm_takeover(seat.uuid, player)
+            elif kind == "action":
+                await self._handle_action(event[1], event[2])
+
+    async def _handle_action(self, dev: str, msg: dict) -> None:
+        idx = next((i for i, d in self._uuid_by_player.items() if d == dev), None)
+        if idx is None or dev in self._takeover:
+            return
+        player = self.players[idx]
+        if self.game.finished or self.game.current is not player:
+            return
+        turn = self.game.turn
+        kind = msg.get("kind")
+        if kind == "roll" and turn.can_roll():
+            await self._do_roll()
+        elif kind == "hold" and 0 < turn.rolls_left < 3:
+            i = int(msg.get("index", -1))
+            if 0 <= i < 5:
+                turn.toggle_hold(i)
+                self.refresh_dice()
+                self._net_sync()
+        elif kind == "score" and turn.rolls_used > 0:
+            try:
+                option = player.card.score_option(int(msg.get("category", -1)), turn.counts())
+            except (ValueError, TypeError):
+                return
+            self._score(player, option, grade=False)
+
+    def action_to_menu(self) -> None:
+        self.run_worker(self.server.stop(), exclusive=False)
+        self.log_write("Match closed.")
+        self.app.pop_screen()
+
+    def action_quit_app(self) -> None:
+        self.run_worker(self.server.stop(), exclusive=False)
+        self.app.exit()
+
+
+def p_c(player: Player) -> str:
+    return player.color or "bold"
+
+
+class OnlineClientScreen(GameScreen):
+    """A joined player: renders host states, sends own actions."""
+
+    def __init__(self, client: net.GameClient, state: dict) -> None:
+        config = GameConfig(
+            difficulties=state["config"].get("difficulties", []),
+            mode="normal",
+            rules=state["config"].get("rules", "official"),
+            n_games=int(state.get("n_games", 1)),
+        )
+        state = dict(state, log=[])
+        super().__init__(config, snapshot=state)
+        self.client = client
+        uuids = state.get("uuids", [])
+        me = net.device_id()
+        self.local_idx = uuids.index(me) if me in uuids else 0
+        self._view_only = False
+        self._prev_history = len(self.players[self.local_idx].history)
+        self._match_done = False
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.log_write("[b]Online match![/b] You joined as "
+                       f"[{self.human.color}]{self.human.display_name}[/{self.human.color}].")
+        self.run_worker(self._consume(), exclusive=False)
+        self.refresh_all()
+
+    def checkpoint(self) -> None:
+        pass
+
+    def start_turn(self) -> None:
+        # The host drives the game; the client only mirrors it.
+        self.refresh_all()
+
+    async def _consume(self) -> None:
+        while self.is_mounted:
+            kind, payload = await self.client.events.get()
+            if kind == "net":
+                if payload == "down":
+                    self.log_write("[red]Connection lost; reconnecting...[/red]")
+                elif payload == "up":
+                    self.log_write("[green]Reconnected.[/green]")
+                self.refresh_status()
+            elif kind == "msg" and payload.get("t") == "state":
+                self._apply_state(payload.get("state") or {}, payload.get("events") or [])
+
+    def _apply_state(self, snap: dict, events: list[str]) -> None:
+        if not snap:
+            return
+        for player, pdata in zip(self.players, snap.get("players", [])):
+            player.card.boxes = [
+                b if b is None else int(b) for b in pdata.get("boxes", [None] * 13)
+            ]
+            player.card.yahtzee_bonus_count = int(pdata.get("ybonus", 0))
+            history = []
+            for h in pdata.get("history", []):
+                past = Scorecard(self.config.rules)
+                past.boxes = [b if b is None else int(b) for b in h.get("boxes", [])]
+                past.yahtzee_bonus_count = int(h.get("ybonus", 0))
+                history.append(past)
+            player.history = history
+        game = self.game
+        game.round = int(snap.get("round", 1))
+        game.current_idx = int(snap.get("current_idx", 0))
+        turn = snap.get("turn") or {}
+        game.turn.dice = [int(d) for d in turn.get("dice", [1] * 5)]
+        game.turn.held = [bool(h) for h in turn.get("held", [False] * 5)]
+        game.turn.rolls_used = int(turn.get("rolls_used", 0))
+        self.game_no = int(snap.get("game_no", 1))
+        game.finished = bool(snap.get("finished"))
+        # Round headers, locally generated like offline
+        key = (self.game_no, game.round)
+        if not game.finished and self._last_logged != key:
+            self._last_logged = key
+            game_part = f"Game {self.game_no} · " if self.n_games > 1 else ""
+            self._pending_header = (
+                f"[dim]── {game_part}Round {game.round}/13 " + "─" * 18 + "[/dim]"
+            )
+        for line in events:
+            self.log_write(line)
+        # Record my own finished games locally (per-game stats)
+        my_history = len(self.human.history)
+        if my_history > self._prev_history:
+            self._prev_history = my_history
+            self._record_finished_game(self.human.history[-1])
+        if game.finished and not self._match_done:
+            self._match_done = True
+            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
+        self.refresh_all()
+
+    def _record_finished_game(self, card: Scorecard) -> None:
+        idx = len(self.human.history) - 1
+        scores = []
+        for p in self.players:
+            if len(p.history) > idx:
+                scores.append(p.history[idx].total())
+        mine = card.total()
+        assist = "hints" if "hints" in self._assists else "none"
+        record_game_result(
+            {
+                "rules": self.config.rules,
+                "n_opponents": len(self.players) - 1,
+                "difficulties": [p.difficulty for p in self.players if p.is_bot],
+                "assist": assist,
+                "your_score": mine,
+                "won": mine >= max(scores) if scores else False,
+                "accuracy": None,
+                "online": True,
+                "players": [
+                    {
+                        "name": p.name,
+                        "bot": p.is_bot,
+                        "difficulty": p.difficulty,
+                        "score": p.history[idx].total() if len(p.history) > idx else None,
+                    }
+                    for p in self.players
+                ],
+            }
+        )
+        self._assists = set()
+
+    # -- own actions go to the host ---------------------------------------
+
+    def action_roll(self) -> None:
+        if not self.human_may_act():
+            return
+        if self.mode == "hints":
+            self._assists.add("hints")
+        turn = self.game.turn
+        if not turn.can_roll():
+            if turn.rolls_left == 0:
+                self.log_write("[dim]No rolls left; fill a box on your card.[/dim]")
+            return
+        self.run_worker(self.client.send_action({"kind": "roll"}), exclusive=False)
+
+    def action_hold(self, idx: int) -> None:
+        if not self.human_may_act():
+            return
+        turn = self.game.turn
+        if turn.rolls_used == 0 or turn.rolls_left == 0:
+            return
+        self.run_worker(
+            self.client.send_action({"kind": "hold", "index": idx}), exclusive=False
+        )
+
+    def _category_picked_net(self, category: int) -> None:
+        turn = self.game.turn
+        try:
+            self.human.card.score_option(category, turn.counts())
+        except ValueError as exc:
+            self.log_write(f"[dim]{exc}[/dim]")
+            return
+        self.run_worker(
+            self.client.send_action({"kind": "score", "category": category}),
+            exclusive=False,
+        )
+
+    @on(PlayerCard.CategoryPicked)
+    def _category_picked(self, event: PlayerCard.CategoryPicked) -> None:
+        if not self.human_may_act():
+            return
+        if self.game.turn.rolls_used == 0:
+            self.log_write("[dim]Roll first (r).[/dim]")
+            return
+        self._category_picked_net(event.category)
+
+    def action_cycle_mode(self) -> None:
+        # Online: only NORMAL and HINTS (the host owns the dice; COACH and
+        # AUTO need the local rules engine driving the turn).
+        self._set_mode("hints" if self.mode == "normal" else "normal")
+
+    def action_new_game(self) -> None:
+        self.log_write("[dim]Only the host can start a new match.[/dim]")
+
+    def action_to_menu(self) -> None:
+        self.client.close()
+        self.app.pop_screen()
+
+    def action_quit_app(self) -> None:
+        self.client.close()
+        self.app.exit()

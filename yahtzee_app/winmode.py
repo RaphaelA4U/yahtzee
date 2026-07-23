@@ -24,9 +24,13 @@ from .solver.oracle import Oracle
 # exact final-round win-probability play alone scored best (51.25% vs pure
 # EV head-to-head); the earlier-round variance tilt consistently HURT the
 # win rate, so it is off by default (WIN_ROUNDS=1 never reaches it).
+# TARGET_MARGIN shifts the score the final round aims for, relative to the
+# best opponent's projected final score (their mean projection overshoots
+# their median, so a small negative margin can win more often).
 WIN_ROUNDS = 1
 EV_BAND = 1.5
 TILT_WHEN_LEADING = False
+TARGET_MARGIN = 0.0
 
 
 @dataclass
@@ -56,6 +60,7 @@ def build_context(
         for p in opponents
     ]
     target, rival = max(projections)
+    target += TARGET_MARGIN
     my_projection = me.match_total() + oracle.turn_start_ev(me.card)
     needed = target - me.match_total()
     return WinContext(
