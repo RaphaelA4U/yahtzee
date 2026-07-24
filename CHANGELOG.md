@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.3
+
+- THE online freeze fix: the consume loops that apply incoming states
+  raced screen mounting and could exit instantly, freezing a client (or
+  host) on the first state forever. They now run for the screen's whole
+  lifetime. This was the real cause behind both desync reports.
+- Native Windows installer: iwr -useb .../install.ps1 | iex.
+- Verified compatible with xterm-256color terminals and the xterm.js v6
+  pipeline that BM Beheer's web SSH uses.
+
 ## v1.7.2
 
 - Fixed: a player who joined through the relay froze after the first

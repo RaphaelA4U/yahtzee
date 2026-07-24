@@ -2943,7 +2943,8 @@ class OnlineHostScreen(GameScreen):
     def on_mount(self) -> None:
         super().on_mount()
         self.run_worker(self._consume(), exclusive=False)
-        self.log_write(
+        self.call_after_refresh(
+            self.log_write,
             "[b]Online match![/b] You are hosting. The game waits for absent "
             "players as long as you keep it open; press [b]b[/b] during their "
             "turn to let a bot fill in until they return.",
@@ -3025,7 +3026,9 @@ class OnlineHostScreen(GameScreen):
         )
 
     async def _consume(self) -> None:
-        while self.is_mounted:
+        # Runs until the screen unmounts (Textual cancels the worker);
+        # never gate this on is_mounted: that races during on_mount.
+        while True:
             event = await self.server.events.get()
             kind = event[0]
             if kind == "join":
@@ -3111,9 +3114,12 @@ class OnlineClientScreen(GameScreen):
 
     def on_mount(self) -> None:
         super().on_mount()
-        self.log_write("[b]Online match![/b] You joined as "
-                       f"[{self.human.color}]{self.human.display_name}[/{self.human.color}].")
         self.run_worker(self._consume(), exclusive=False)
+        self.call_after_refresh(
+            self.log_write,
+            "[b]Online match![/b] You joined as "
+            f"[{self.human.color}]{self.human.display_name}[/{self.human.color}].",
+        )
         self.refresh_all()
 
     def checkpoint(self) -> None:
@@ -3124,7 +3130,9 @@ class OnlineClientScreen(GameScreen):
         self.refresh_all()
 
     async def _consume(self) -> None:
-        while self.is_mounted:
+        # Runs until the screen unmounts (Textual cancels the worker);
+        # never gate this on is_mounted: that races during on_mount.
+        while True:
             kind, payload = await self.client.events.get()
             if kind == "net":
                 if payload == "down":

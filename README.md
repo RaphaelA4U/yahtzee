@@ -107,9 +107,13 @@ classic paper pad. The highest match total wins.
 - Quit with `ctrl+q` (never by accident); dice use the OS cryptographic
   random generator.
 - After an update the app shows what's new.
-- macOS and Linux install with the one-liner; on Windows use WSL, or
-  natively: `git clone`, `python -m venv`, `pip install -e .`, then
-  `python -m yahtzee_app` (Windows Terminal recommended).
+- macOS and Linux install with the bash one-liner above. Windows
+  (PowerShell, native):
+  `iwr -useb https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.ps1 | iex`
+  (needs git + Python 3.10+; Windows Terminal recommended). WSL with the
+  bash one-liner works too.
+- On Linux, open a new shell (or `source ~/.bashrc`) after installing so
+  the `yahtzee` command is found.
 - `python -m tools.arena` pits strategies against each other headlessly;
   it was used to tune WIN mode (exact final-round win-probability play,
   51.25% head-to-head against pure EV over 3000 matches).
