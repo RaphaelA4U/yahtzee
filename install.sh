@@ -1,45 +1,190 @@
-#!/usr/bin/env bash
-# One-line installer for the Yahtzee TUI:
-#   curl -fsSL https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | bash
+#!/bin/sh
+# One-line installer for the Yahtzee TUI.
+#
+#   macOS / Linux:      curl -fsSL https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | bash
+#   iSH (iOS) / Alpine: wget -qO- https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | sh
 #
 # Installs into ~/.yahtzee, creates a virtualenv, and links the `yahtzee`
 # command into ~/.local/bin. Safe to re-run; it then updates in place.
-set -euo pipefail
+#
+# Environment overrides:
+#   YAHTZEE_HOME      install directory (default: ~/.yahtzee)
+#   YAHTZEE_REPO_URL  git remote to install from
+#   YAHTZEE_YES=1     non-interactive: auto-confirm system package installs
+#
+# POSIX sh: this script must keep working under busybox ash (iSH) and dash.
+set -eu
+(set -o pipefail) 2>/dev/null && set -o pipefail || true
 
 REPO_URL="${YAHTZEE_REPO_URL:-https://github.com/RaphaelA4U/yahtzee.git}"
 APP_DIR="${YAHTZEE_HOME:-$HOME/.yahtzee}"
+VENV="$APP_DIR/.venv"
 BIN_DIR="$HOME/.local/bin"
+MIN_PY_MAJOR=3 MIN_PY_MINOR=9
 
-say() { printf '\033[1;33m[yahtzee]\033[0m %s\n' "$1"; }
+say() { printf '\033[38;5;99m[yahtzee]\033[0m %s\n' "$1"; }
+err() { printf '\033[31m[yahtzee] Error:\033[0m %s\n' "$1" >&2; }
 
-command -v git >/dev/null 2>&1 || { echo "Error: git is required."; exit 1; }
+# --- platform / package manager detection --------------------------------
+OS="$(uname -s 2>/dev/null || echo unknown)"
+IS_ALPINE=0; [ -f /etc/alpine-release ] && IS_ALPINE=1
+IS_ISH=0; case "$(uname -r 2>/dev/null)" in *ish*) IS_ISH=1 ;; esac
 
-PYTHON="$(command -v python3 || true)"
+PKG=""
+if command -v apk >/dev/null 2>&1; then PKG=apk
+elif command -v apt-get >/dev/null 2>&1; then PKG=apt
+elif command -v dnf >/dev/null 2>&1; then PKG=dnf
+elif command -v pacman >/dev/null 2>&1; then PKG=pacman
+elif command -v brew >/dev/null 2>&1; then PKG=brew
+fi
+
+confirm() { # $1 = question; true if YAHTZEE_YES=1 or user says yes on the tty
+    [ "${YAHTZEE_YES:-0}" = "1" ] && return 0
+    # /dev/tty can exist yet be unopenable (no controlling terminal, e.g. CI).
+    if { printf '[yahtzee] %s [y/N] ' "$1" > /dev/tty; } 2>/dev/null; then
+        { IFS= read -r ans < /dev/tty; } 2>/dev/null || return 1
+        case "$ans" in y|Y|yes|YES) return 0 ;; esac
+    fi
+    return 1
+}
+
+run_root() { # run as root; use sudo when we are not root (brew never wants root)
+    if [ "$PKG" = brew ] || [ "$(id -u)" = 0 ]; then "$@"
+    elif command -v sudo >/dev/null 2>&1; then sudo "$@"
+    else err "need root (or sudo) to run: $*"; return 1
+    fi
+}
+
+pkg_install() { # $@ = package names for the detected manager
+    say "Installing with $PKG: $*"
+    case "$PKG" in
+        apk)    run_root apk add --no-cache "$@" ;;
+        apt)    run_root apt-get update -qq && run_root apt-get install -y -qq "$@" ;;
+        dnf)    run_root dnf install -y -q "$@" ;;
+        pacman) run_root pacman -S --noconfirm --needed "$@" ;;
+        brew)   brew install "$@" ;;
+        *)      return 1 ;;
+    esac
+}
+
+need_cmd() { # $1 = command, $2 = package name(s), $3 = manual hint
+    command -v "$1" >/dev/null 2>&1 && return 0
+    if [ -n "$PKG" ] && confirm "'$1' is missing. Install it now with $PKG?"; then
+        # shellcheck disable=SC2086
+        pkg_install $2 && command -v "$1" >/dev/null 2>&1 && return 0
+    fi
+    err "'$1' is required. Install it first ($3), then re-run this installer."
+    exit 2
+}
+
+py_ok() { "$1" -c "import sys; sys.exit(0 if sys.version_info >= ($MIN_PY_MAJOR, $MIN_PY_MINOR) else 1)" 2>/dev/null; }
+
+find_python() {
+    for c in python3 python3.13 python3.12 python3.11 python3.10 python3.9 python; do
+        if command -v "$c" >/dev/null 2>&1 && py_ok "$c"; then
+            command -v "$c"; return 0
+        fi
+    done
+    return 1
+}
+
+# --- prerequisites (checked BEFORE anything is cloned or written) --------
+case "$PKG" in
+    apk)  need_cmd git git "apk add git" ;;
+    apt)  need_cmd git git "sudo apt-get install git" ;;
+    *)    need_cmd git git "https://git-scm.com" ;;
+esac
+
+PYTHON="$(find_python || true)"
 if [ -z "$PYTHON" ]; then
-    echo "Error: python3 (3.10 or newer) is required."
-    exit 1
+    FOUND="$(command -v python3 >/dev/null 2>&1 && python3 -V 2>&1 || echo none)"
+    say "Python >= $MIN_PY_MAJOR.$MIN_PY_MINOR not found (found: $FOUND)."
+    case "$PKG" in
+        apk)  PYPKGS="python3 py3-pip" ;;
+        apt)  PYPKGS="python3 python3-venv python3-pip" ;;
+        dnf)  PYPKGS="python3" ;;
+        pacman) PYPKGS="python" ;;
+        brew) PYPKGS="python3" ;;
+        *)    PYPKGS="" ;;
+    esac
+    if [ -n "$PYPKGS" ] && confirm "Install Python now with $PKG ($PYPKGS)?"; then
+        # shellcheck disable=SC2086
+        pkg_install $PYPKGS
+        PYTHON="$(find_python || true)"
+    fi
 fi
-if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-    echo "Error: python3 3.10+ is required (found: $("$PYTHON" -V))."
-    exit 1
+if [ -z "$PYTHON" ]; then
+    err "Python $MIN_PY_MAJOR.$MIN_PY_MINOR+ is required and could not be installed automatically."
+    err "Install it with your package manager (apk add python3 / apt install python3 python3-venv / brew install python3) and re-run."
+    exit 2
+fi
+say "Using $PYTHON ($("$PYTHON" -V 2>&1))"
+
+# Alpine/iSH: pip and numpy must come from apk. PyPI has no musl wheels for
+# numpy on i686 (iSH), and building it from source there is not realistic.
+if [ "$IS_ALPINE" = 1 ]; then
+    "$PYTHON" -m pip --version >/dev/null 2>&1 || need_cmd pip3 py3-pip "apk add py3-pip"
+    if ! "$PYTHON" -c 'import numpy' 2>/dev/null; then
+        if confirm "numpy is missing. Install it now with apk (py3-numpy)?"; then
+            pkg_install py3-numpy
+        else
+            err "numpy is required. Run: apk add py3-numpy   (pip cannot build it here), then re-run."
+            exit 2
+        fi
+    fi
 fi
 
+# --- clone / update ------------------------------------------------------
 if [ -d "$APP_DIR/.git" ]; then
     say "Existing install found in $APP_DIR; updating..."
     git -C "$APP_DIR" pull --ff-only
+elif [ -e "$APP_DIR" ] && [ ! -d "$APP_DIR/.git" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+    err "$APP_DIR exists but is not a yahtzee checkout; move it aside and re-run."
+    exit 1
 else
     say "Cloning into $APP_DIR ..."
     git clone --depth 1 "$REPO_URL" "$APP_DIR"
 fi
 
-if [ ! -x "$APP_DIR/.venv/bin/python" ]; then
+# --- virtualenv (recreated when broken or on an outdated Python) ---------
+if [ -e "$VENV" ] && ! py_ok "$VENV/bin/python"; then
+    say "Existing virtualenv is broken or on an old Python; recreating..."
+    rm -rf "$VENV"
+fi
+if [ ! -e "$VENV" ]; then
     say "Creating virtualenv..."
-    "$PYTHON" -m venv "$APP_DIR/.venv"
+    if [ "$IS_ALPINE" = 1 ]; then
+        # --without-pip skips ensurepip, which is unusably slow on iSH;
+        # --system-site-packages exposes apk's numpy inside the venv.
+        "$PYTHON" -m venv --without-pip --system-site-packages "$VENV" \
+            || { rm -rf "$VENV"; err "could not create a virtualenv."; exit 1; }
+    elif ! "$PYTHON" -m venv "$VENV"; then
+        rm -rf "$VENV"
+        if [ "$PKG" = apt ] && confirm "venv failed (python3-venv missing?). Install python3-venv and retry?"; then
+            pkg_install python3-venv python3-pip
+            "$PYTHON" -m venv "$VENV" || { rm -rf "$VENV"; err "could not create a virtualenv."; exit 1; }
+        else
+            err "could not create a virtualenv (on Debian/Ubuntu: sudo apt install python3-venv)."
+            exit 1
+        fi
+    fi
 fi
 
-say "Installing dependencies (textual, numpy)..."
-"$APP_DIR/.venv/bin/pip" install -q --disable-pip-version-check -e "$APP_DIR"
+# --- install the app (metadata in pyproject.toml pulls in dependencies) --
+say "Installing dependencies (textual, numpy, websockets)..."
+if [ -x "$VENV/bin/pip" ]; then
+    "$VENV/bin/pip" install -q --disable-pip-version-check -e "$APP_DIR"
+else
+    # pip-less venv (Alpine/iSH): drive the venv with an outside pip >= 22.3
+    # via `pip --python`. Alpine 3.14 ships pip 20; upgrade it (user site) first.
+    if ! "$PYTHON" -c 'import pip; from pip._vendor.packaging.version import Version; import sys; sys.exit(0 if Version(pip.__version__) >= Version("22.3") else 1)' 2>/dev/null; then
+        say "Upgrading pip (needed for editable installs)..."
+        "$PYTHON" -m pip install --user -q --disable-pip-version-check -U pip
+    fi
+    "$PYTHON" -m pip --python "$VENV/bin/python" install -q --disable-pip-version-check -e "$APP_DIR"
+fi
 
+# --- command on PATH -----------------------------------------------------
 mkdir -p "$BIN_DIR"
 chmod +x "$APP_DIR/bin/yahtzee"
 ln -sf "$APP_DIR/bin/yahtzee" "$BIN_DIR/yahtzee"
@@ -56,9 +201,15 @@ case ":$PATH:" in
             printf '\n# Added by yahtzee installer\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$RC"
             say "Added $BIN_DIR to PATH in $RC"
         fi
-        say "Open a new terminal (or run: source $RC) so the command is found."
+        say "Open a new terminal (or run: . $RC) so the command is found."
         ;;
 esac
 
-"$APP_DIR/.venv/bin/python" -m yahtzee_app --version
+# --- verify --------------------------------------------------------------
+"$VENV/bin/python" -c 'import textual, numpy, websockets' \
+    || { err "dependency verification failed; re-run the installer."; exit 1; }
+"$VENV/bin/python" -m yahtzee_app --version
+if [ "$IS_ISH" = 1 ]; then
+    say "iSH note: the first game builds solver tables; on iSH that can take a while. Let it finish once."
+fi
 say "Done! Start the game with: yahtzee"

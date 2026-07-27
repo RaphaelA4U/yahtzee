@@ -22,7 +22,8 @@ Then start the game with:
 yahtzee
 ```
 
-Requirements: `git` and `python3` 3.10+. The installer puts everything in
+Requirements: `git` and `python3` 3.9+ (the installer offers to install
+missing ones via your package manager). The installer puts everything in
 `~/.yahtzee` and links the `yahtzee` command into `~/.local/bin`.
 
 ## Auto-update
@@ -110,8 +111,13 @@ classic paper pad. The highest match total wins.
 - macOS and Linux install with the bash one-liner above. Windows
   (PowerShell, native):
   `iwr -useb https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.ps1 | iex`
-  (needs git + Python 3.10+; Windows Terminal recommended). WSL with the
+  (needs git + Python 3.9+; Windows Terminal recommended). WSL with the
   bash one-liner works too.
+- iSH (iOS) and Alpine, which have no bash or curl by default:
+  `wget -qO- https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | sh`
+  The installer uses apk for python3/pip/numpy and skips the (very slow on
+  iSH) ensurepip step. The first game builds solver tables once; on iSH
+  give that a few minutes.
 - On Linux, open a new shell (or `source ~/.bashrc`) after installing so
   the `yahtzee` command is found.
 - `python -m tools.arena` pits strategies against each other headlessly;

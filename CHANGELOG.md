@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.7.4
+
+- Python 3.9 is now supported (was 3.10+): the code never needed 3.10,
+  and all runtime dependencies resolve fine on 3.9 (textual 8.2.8,
+  numpy 2.0.x, websockets 15.0.x). CI now tests 3.9 and 3.12.
+- The installer was rebuilt for reliability: POSIX sh (works under
+  busybox ash and dash, not just bash), platform and package-manager
+  detection (apk/apt/dnf/pacman/brew), offers to install missing
+  git/python/numpy with confirmation (YAHTZEE_YES=1 for non-interactive),
+  checks the Python version before cloning anything, recreates broken or
+  outdated virtualenvs, and verifies the install by importing the
+  dependencies and running --version. Non-zero exit codes on failure.
+- iSH (iOS) and Alpine are supported:
+  wget -qO- https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | sh
+  Uses apk's python3/pip/numpy (PyPI has no musl-i686 numpy wheels) and
+  creates the virtualenv without ensurepip, which is unusably slow on
+  iSH, driving it with an upgraded outside pip instead.
+- Honest dependency floors: websockets>=14 (the asyncio implementation
+  the app actually uses), textual capped below 9, numpy floor per
+  Python version.
+
 ## v1.7.3
 
 - THE online freeze fix: the consume loops that apply incoming states

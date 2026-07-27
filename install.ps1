@@ -14,7 +14,12 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $py) {
-    Write-Error "Python 3.10+ is required. Install it with: winget install Python.Python.3.12"
+    Write-Error "Python 3.9+ is required. Install it with: winget install Python.Python.3.12"
+}
+& $py.Source -c "import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)"
+if ($LASTEXITCODE -ne 0) {
+    $found = & $py.Source -V
+    Write-Error "Python 3.9+ is required (found: $found). Install a newer one: winget install Python.Python.3.12"
 }
 
 if (Test-Path (Join-Path $dir ".git")) {
