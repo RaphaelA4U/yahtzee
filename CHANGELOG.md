@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.8.1
+
+- Your own card is now always the first card on your screen, also as an
+  online joiner.
+- iSH plays yahtzee now: its emulator cannot run numpy at all (no SSE),
+  so numpy became an optional [solver] extra and the game runs in lite
+  mode without it. Online play and the easy/medium bots work fully;
+  hints, coach, auto and the hard/optimal bots need the solver and say
+  so instead of crashing. The installer detects an unusable numpy and
+  installs lite automatically; all other platforms keep the full solver.
+
 ## v1.8.0
 
 - You are always purple on your own screen, online too: every player

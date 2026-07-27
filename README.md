@@ -121,9 +121,11 @@ classic paper pad. The highest match total wins.
   (iSH has no curl) and the installer is plain POSIX sh (iSH has no bash).
   In Git Bash on Windows it hands over to the PowerShell installer
   automatically (needs git + Python 3.9+; Windows Terminal recommended).
-- On iSH/Alpine the installer uses apk for python3/pip/numpy and skips the
-  (very slow on iSH) ensurepip step. The first game builds solver tables
-  once; on iSH give that a few minutes.
+- On iSH/Alpine the installer uses apk for python3/pip and skips the (very
+  slow on iSH) ensurepip step. iSH's emulator cannot run numpy at all (no
+  SSE), so there the game installs in lite mode: online play and the
+  easy/medium bots work fully; hints, coach, auto and the hard/optimal
+  bots need the solver and stay off on that device.
 - On Linux, open a new shell (or `source ~/.bashrc`) after installing so
   the `yahtzee` command is found.
 - `python -m tools.arena` pits strategies against each other headlessly;

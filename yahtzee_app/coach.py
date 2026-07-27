@@ -11,7 +11,10 @@ import math
 from dataclasses import dataclass, field
 
 from .game import CATEGORY_NAMES, Scorecard, dice_of
-from .solver.oracle import Oracle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .solver.oracle import Oracle
 
 
 @dataclass

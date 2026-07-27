@@ -14,9 +14,10 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from .game import (
     CHANCE,
@@ -34,7 +35,8 @@ from .game import (
     has_straight,
     is_yahtzee,
 )
-from .solver.oracle import Oracle
+if TYPE_CHECKING:
+    from .solver.oracle import Oracle
 
 DIFFICULTIES = ["easy", "medium", "hard", "optimal"]
 
@@ -61,11 +63,13 @@ BOT_NAMES = {
 
 # Average yield per category under strong play (Verhoeff), used as a measure
 # of what you give up by filling or dumping a box.
-BASELINE = np.array([
+# A plain tuple on purpose: the easy/medium bots must work without numpy
+# (iSH's emulator cannot run it; see solver_available()).
+BASELINE = (
     1.88, 5.28, 8.57, 12.16, 15.69, 19.19,   # ones through sixes
     21.66, 13.10, 22.59, 29.46, 32.71,        # 3 of a kind, 4 of a kind, FH, SS, LS
     16.87, 22.01,                             # yahtzee, chance
-])
+)
 
 
 class Bot:
@@ -234,6 +238,8 @@ class OptimalBot(OracleBot):
 
 def heuristic_table() -> np.ndarray:
     """Heuristic V table for the hard bot: baselines + bonus estimate."""
+    import numpy as np
+
     n_masks = 1 << 13
     V = np.zeros((n_masks, 64, 2), dtype=np.float64)
     u = np.arange(64, dtype=np.float64)
@@ -258,8 +264,26 @@ _heuristic_oracles: dict[str, Oracle] = {}
 _optimal_oracles: dict[str, Oracle] = {}
 
 
+def solver_available() -> bool:
+    """True when numpy is importable AND usable; iSH's x86 emulator has no
+    SSE, so Alpine's numpy import raises there even when installed."""
+    global _solver_ok
+    if _solver_ok is None:
+        try:
+            import numpy  # noqa: F401
+
+            _solver_ok = True
+        except Exception:  # noqa: BLE001
+            _solver_ok = False
+    return _solver_ok
+
+
+_solver_ok: Optional[bool] = None
+
+
 def get_optimal_oracle(rules: str = "official") -> Oracle:
     if rules not in _optimal_oracles:
+        from .solver.oracle import Oracle
         from .solver.tables import load_table
 
         _optimal_oracles[rules] = Oracle(load_table(rules), rules)
@@ -272,6 +296,8 @@ def make_bot(difficulty: str, rules: str = "official") -> Bot:
     if difficulty == "medium":
         return MediumBot()
     if difficulty == "hard":
+        from .solver.oracle import Oracle
+
         global _heuristic_table
         if rules not in _heuristic_oracles:
             if _heuristic_table is None:

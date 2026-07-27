@@ -157,3 +157,50 @@ def test_online_snapshot_roundtrip():
     assert cfg.load_online_snapshot() == {"round": 7}
     cfg.clear_online_snapshot()
     assert cfg.load_online_snapshot() is None
+
+
+@pytest.mark.asyncio
+async def test_client_own_card_shown_first():
+    from yahtzee_app.ui.app import OnlineClientScreen, PlayerCard, YahtzeeApp
+
+    me = net.device_id()
+    client = net.GameClient("127.0.0.1:59999", "Me")
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(OnlineClientScreen(client, _client_state(me)))
+        await pilot.pause(0.2)
+        cards = list(app.screen.query(PlayerCard))
+        assert cards[0].player.name == "Me"  # your card first, host second
+        assert cards[1].player.name == "Hosty"
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_lite_mode_without_solver(monkeypatch):
+    """No usable numpy (iSH): the game still runs; solver features off."""
+    import yahtzee_app.bots as bots
+    import yahtzee_app.ui.app as ui
+
+    def boom(rules="official"):
+        raise RuntimeError("numpy unusable on this device")
+
+    monkeypatch.setattr(ui, "get_optimal_oracle", boom)
+    monkeypatch.setattr(bots, "get_optimal_oracle", boom)
+    app = ui.YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        config = ui.GameConfig(
+            difficulties=["optimal"], mode="normal", rules="official", n_games=1
+        )
+        app.start_game(config)
+        await pilot.pause(0.3)
+        screen = app.screen
+        assert screen.oracle is None
+        bot = next(iter(screen.bots.values()))
+        assert bot.difficulty == "medium"  # optimal degraded, game playable
+        screen.action_cycle_mode()
+        assert screen.mode == "normal"  # HINTS/COACH/AUTO stay off
+        screen.action_roll()
+        await pilot.pause(1.2)
+        assert screen.game.turn.rolls_used == 1  # rolling works fine

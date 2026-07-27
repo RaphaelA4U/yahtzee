@@ -130,17 +130,25 @@ if [ -z "$PYTHON" ]; then
 fi
 say "Using $PYTHON ($("$PYTHON" -V 2>&1))"
 
-# Alpine/iSH: pip and numpy must come from apk. PyPI has no musl wheels for
-# numpy on i686 (iSH), and building it from source there is not realistic.
+# The solver (hints, coach, auto, hard/optimal bots) needs numpy. On
+# Alpine/iSH it must come from apk (PyPI has no musl-i686 wheels), and on
+# iSH even apk's numpy cannot run (the emulator lacks SSE) - the game then
+# installs WITHOUT the solver and still plays online and vs easy/medium bots.
+SOLVER_EXTRA="[solver]"
 if [ "$IS_ALPINE" = 1 ]; then
     "$PYTHON" -m pip --version >/dev/null 2>&1 || need_cmd pip3 py3-pip "apk add py3-pip"
     if ! "$PYTHON" -c 'import numpy' 2>/dev/null; then
-        if confirm "numpy is missing. Install it now with apk (py3-numpy)?"; then
-            pkg_install py3-numpy
-        else
-            err "numpy is required. Run: apk add py3-numpy   (pip cannot build it here), then re-run."
-            exit 2
+        if ! apk info -e py3-numpy >/dev/null 2>&1 \
+                && confirm "numpy (solver: hints/coach/optimal bots) is missing. Install it with apk?"; then
+            pkg_install py3-numpy || true
         fi
+    fi
+    if ! "$PYTHON" -c 'import numpy' 2>/dev/null; then
+        say "numpy cannot run on this device (iSH's emulator has no SSE support,"
+        say "and pip cannot build it here). Installing WITHOUT solver features:"
+        say "online play and the easy/medium bots work; hints, coach, auto and"
+        say "the hard/optimal bots stay off on this device."
+        SOLVER_EXTRA=""
     fi
 fi
 
@@ -170,7 +178,7 @@ fi
 # Alpine/iSH: the venv MUST see apk's numpy (system site-packages). A venv
 # made by an older installer (or plain `python3 -m venv`) does not, and pip
 # then tries to compile numpy from source, which cannot work there.
-if [ "$IS_ALPINE" = 1 ] && [ -e "$VENV" ] \
+if [ "$IS_ALPINE" = 1 ] && [ -n "$SOLVER_EXTRA" ] && [ -e "$VENV" ] \
         && ! "$VENV/bin/python" -c 'import numpy' 2>/dev/null; then
     say "Existing virtualenv cannot see apk's numpy; recreating it..."
     rm -rf "$VENV"
@@ -195,9 +203,13 @@ if [ ! -e "$VENV" ]; then
 fi
 
 # --- install the app (metadata in pyproject.toml pulls in dependencies) --
-say "Installing dependencies (textual, numpy, websockets)..."
+if [ -n "$SOLVER_EXTRA" ]; then
+    say "Installing dependencies (textual, numpy, websockets)..."
+else
+    say "Installing dependencies (textual, websockets; no solver)..."
+fi
 if [ -x "$VENV/bin/pip" ]; then
-    "$VENV/bin/pip" install -q --disable-pip-version-check -e "$APP_DIR"
+    "$VENV/bin/pip" install -q --disable-pip-version-check -e "$APP_DIR$SOLVER_EXTRA"
 else
     # pip-less venv (Alpine/iSH): drive the venv with an outside pip >= 22.3
     # via `pip --python`. Alpine 3.14 ships pip 20; upgrade it (user site) first.
@@ -215,7 +227,7 @@ else
     # compilation, the two things iSH's emulated filesystem/CPU choke on.
     # --only-binary=:all: forbids doomed source builds (no compiler on iSH);
     # every dependency we need ships a pure-Python wheel or comes from apk.
-    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: -e "$APP_DIR"
+    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: -e "$APP_DIR$SOLVER_EXTRA"
 fi
 
 # --- command on PATH -----------------------------------------------------
@@ -240,8 +252,12 @@ case ":$PATH:" in
 esac
 
 # --- verify --------------------------------------------------------------
-"$VENV/bin/python" -c 'import textual, numpy, websockets' \
+"$VENV/bin/python" -c 'import textual, websockets' \
     || { err "dependency verification failed; re-run the installer."; exit 1; }
+if [ -n "$SOLVER_EXTRA" ]; then
+    "$VENV/bin/python" -c 'import numpy' \
+        || { err "numpy verification failed; re-run the installer."; exit 1; }
+fi
 "$VENV/bin/python" -m yahtzee_app --version
 if [ "$IS_ISH" = 1 ]; then
     say "iSH note: the first game builds solver tables; on iSH that can take a while. Let it finish once."

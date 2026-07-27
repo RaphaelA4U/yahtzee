@@ -36,7 +36,7 @@ if (-not (Test-Path $venvPy)) {
     & $py.Source -m venv (Join-Path $dir ".venv")
 }
 Write-Host "[yahtzee] Installing dependencies..."
-& (Join-Path $dir ".venv\Scripts\pip.exe") install -q --disable-pip-version-check -e $dir
+& (Join-Path $dir ".venv\Scripts\pip.exe") install -q --disable-pip-version-check -e "$dir[solver]"
 
 # WindowsApps is on PATH for every user profile by default.
 $bin = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"

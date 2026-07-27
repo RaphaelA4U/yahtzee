@@ -55,7 +55,11 @@ def main() -> None:
         print(f"yahtzee v{__version__}")
         return
     if args.build_tables:
-        from .solver.build import main as build_main
+        try:
+            from .solver.build import main as build_main
+        except Exception as exc:  # noqa: BLE001
+            print(f"Cannot build tables: the solver needs numpy ({exc}).")
+            raise SystemExit(2)
 
         build_main()
         return
@@ -108,9 +112,16 @@ def main() -> None:
 
     # Preload the default table before the TUI starts, so a missing table
     # builds with visible progress instead of freezing the interface.
-    from .solver.tables import load_table
+    # Without a working numpy (iSH) the game starts in lite mode instead.
+    try:
+        from .solver.tables import load_table
 
-    load_table((initial or {}).get("rules", "official"))
+        load_table((initial or {}).get("rules", "official"))
+    except Exception:  # noqa: BLE001
+        print(
+            "Solver unavailable (numpy missing or unusable); starting in lite "
+            "mode: online play and easy/medium bots work, hints/coach/auto are off."
+        )
 
     from .ui.app import run
 

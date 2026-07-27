@@ -1418,12 +1418,17 @@ class GameScreen(Screen):
             self.players = build_players(config)
             self.game = Game(self.players, seed=config.seed)
             self.coach = CoachTracker()
+        # Without a working numpy (iSH) the game runs in lite mode: no
+        # hints/coach/auto, and hard/optimal bots degrade to medium.
+        try:
+            self.oracle = get_optimal_oracle(config.rules)
+        except Exception:  # noqa: BLE001
+            self.oracle = None
         self.bots = {
-            p.name: make_bot(p.difficulty, config.rules)
+            p.name: self._make_bot_safe(p.difficulty)
             for p in self.players
             if p.is_bot
         }
-        self.oracle = get_optimal_oracle(config.rules)
         self._turn_worker = None
         self._rolling = False
         self._recorded = False
@@ -1546,10 +1551,15 @@ class GameScreen(Screen):
                     # Cards wrap into rows; how many fit side by side depends
                     # on how wide a card is (more games = wider columns).
                     per_row = 3 if self.n_games == 1 else (2 if self.n_games <= 4 else 1)
+                    # Viewer-relative order: your own card always comes
+                    # first, whichever seat you occupy (online joiners too).
+                    order = [self.local_idx] + [
+                        i for i in range(len(self.players)) if i != self.local_idx
+                    ]
                     with VerticalScroll(id="cards-scroll"):
-                        for start in range(0, len(self.players), per_row):
+                        for start in range(0, len(order), per_row):
                             with Horizontal(classes="cards-row"):
-                                for i in range(start, min(start + per_row, len(self.players))):
+                                for i in order[start:start + per_row]:
                                     yield PlayerCard(
                                         self.players[i],
                                         self.n_games,
@@ -1560,6 +1570,13 @@ class GameScreen(Screen):
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
+        if self.oracle is None:
+            self.call_after_refresh(
+                self.log_write,
+                "[dim]Lite mode: the solver (numpy) cannot run on this device. "
+                "Online play and easy/medium bots work; hints, coach, auto and "
+                "hard/optimal bots are off.[/dim]",
+            )
         if self._restored_log:
             # Continue/view: bring the old log back exactly as it was.
             for line in self._restored_log:
@@ -1648,13 +1665,19 @@ class GameScreen(Screen):
     def rounds_left_for(self, player: Player) -> int:
         return sum(1 for b in player.card.boxes if b is None)
 
+    def _make_bot_safe(self, difficulty: str | None):
+        try:
+            return make_bot(difficulty, self.config.rules)
+        except Exception:  # noqa: BLE001 - solver bots need numpy (lite mode)
+            return make_bot("medium", self.config.rules)
+
     def _win_context(self, enabled: bool = True) -> winmode.WinContext:
         return winmode.build_context(
             self.human,
             [p for p in self.players if p.is_bot],
             self.oracle,
             self.rounds_left_for(self.human),
-            enabled,
+            enabled and self.oracle is not None,
         )
 
     def refresh_all(self) -> None:
@@ -1920,7 +1943,7 @@ class GameScreen(Screen):
     def _score(self, player: Player, option, prefix: str | None = None, grade: bool = True) -> None:
         turn = self.game.turn
         counts = turn.counts()
-        if grade and player is self.human:
+        if grade and player is self.human and self.oracle is not None:
             if self.mode in ("hints", "coach"):
                 self._assists.add(self.mode)
             decision = record_score(
@@ -2072,7 +2095,7 @@ class GameScreen(Screen):
             return
         if self.mode in ("hints", "coach"):
             self._assists.add(self.mode)
-        if turn.rolls_used > 0:
+        if turn.rolls_used > 0 and self.oracle is not None:
             decision = record_keep(
                 self.coach,
                 self.oracle,
@@ -2144,6 +2167,13 @@ class GameScreen(Screen):
         self.human_card_widget().focus()
 
     def _show_hint(self, auto: bool = False) -> None:
+        if self.oracle is None:
+            if not auto:
+                self.log_write(
+                    "[dim]Hints need the solver (numpy), which cannot run on "
+                    "this device.[/dim]"
+                )
+            return
         if not self.is_human_turn():
             self.log_write("[dim]Hints only work during your turn.[/dim]")
             return
@@ -2214,6 +2244,12 @@ class GameScreen(Screen):
             self.start_turn()
 
     def action_cycle_mode(self) -> None:
+        if self.oracle is None:
+            self.log_write(
+                "[dim]HINTS, COACH and AUTO need the solver (numpy), which "
+                "cannot run on this device.[/dim]"
+            )
+            return
         self._set_mode(MODES[(MODES.index(self.mode) + 1) % len(MODES)], countdown=True)
 
     def action_command(self) -> None:
@@ -3425,6 +3461,12 @@ class OnlineClientScreen(GameScreen):
     def action_cycle_mode(self) -> None:
         # Online: only NORMAL and HINTS (the host owns the dice; COACH and
         # AUTO need the local rules engine driving the turn).
+        if self.oracle is None:
+            self.log_write(
+                "[dim]HINTS need the solver (numpy), which cannot run on "
+                "this device.[/dim]"
+            )
+            return
         self._set_mode("hints" if self.mode == "normal" else "normal")
 
     def action_new_game(self) -> None:

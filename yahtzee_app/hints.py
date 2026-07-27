@@ -14,7 +14,10 @@ from .game import (
     dice_of,
     is_yahtzee,
 )
-from .solver.oracle import Oracle
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .solver.oracle import Oracle
 
 HintLine = tuple[str, str]
 
