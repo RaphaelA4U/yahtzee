@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.8.0
+
+- You are always purple on your own screen, online too: every player
+  sees themselves in purple and the others in their own colors, on the
+  cards and in the round log alike.
+- Rolls now animate on the joined side as well, your own and those of
+  the other players.
+- Online matches survive closing the app. The host gets Resume hosting
+  in the menu (same room code, seats stay reserved on device identity)
+  and joined players get Rejoin online game (reconnects your seat
+  automatically). Players who kept their app open reconnect by
+  themselves the moment the host resumes.
+
 ## v1.7.9
 
 - iSH fix: a virtualenv made by an older installer could not see apk's

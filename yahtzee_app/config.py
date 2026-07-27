@@ -20,6 +20,7 @@ if _profile:
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 STATS_FILE = CONFIG_DIR / "stats.json"
 SAVE_FILE = CONFIG_DIR / "saved_game.json"
+ONLINE_SAVE_FILE = CONFIG_DIR / "saved_online.json"
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "mode": "normal",           # normal | hints | coach | auto
@@ -80,6 +81,22 @@ def load_game_snapshot() -> dict[str, Any] | None:
 def clear_saved_game() -> None:
     try:
         SAVE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def save_online_snapshot(snapshot: dict[str, Any]) -> None:
+    _write_json(ONLINE_SAVE_FILE, snapshot)
+
+
+def load_online_snapshot() -> dict[str, Any] | None:
+    snapshot = _read_json(ONLINE_SAVE_FILE, None)
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def clear_online_snapshot() -> None:
+    try:
+        ONLINE_SAVE_FILE.unlink(missing_ok=True)
     except OSError:
         pass
 

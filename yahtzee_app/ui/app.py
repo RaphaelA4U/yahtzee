@@ -46,11 +46,14 @@ from ..bots import (
 from ..coach import CoachTracker, Decision, record_keep, record_score, verdict_line
 from ..config import (
     SPEED_DELAYS,
+    clear_online_snapshot,
     clear_saved_game,
     load_game_snapshot,
+    load_online_snapshot,
     load_settings,
     record_game_result,
     save_game_snapshot,
+    save_online_snapshot,
     save_settings,
     stats_summary,
 )
@@ -945,6 +948,10 @@ game and type the code. The host's menu settings decide bots, games,
 and rules. The game waits for absent players indefinitely while the
 host keeps it open; the host presses b to let a bot fill in until they
 return. Seats survive reconnects. Online you play NORMAL or HINTS.
+Everyone sees themselves in purple; other players get their own colors.
+Closed the app mid-match? The menu offers Resume hosting (host side,
+same room code, seats stay reserved) and Rejoin online game (player
+side, reconnects to your seat automatically).
 Testing on one machine? Run the second instance with
 yahtzee --profile test (own settings and identity).
 
@@ -1030,6 +1037,8 @@ MENU_INFO = {
     "view": "Look back at the final cards of your last match.",
     "new": "Start a new match with the settings below.",
     "host": "Host an online game: friends join over LAN, Tailscale, or the internet.",
+    "resume-host": "Reopen your unfinished online match; players rejoin with the same code.",
+    "rejoin": "Reconnect to the online match you were in; your seat is saved.",
     "join": "Join a friend's online game by address (host:port).",
     "bots": "Number of computer opponents at the table.",
     "games": "Games per match; every game fills one column on your card.",
@@ -1103,6 +1112,8 @@ class MenuScreen(Screen):
             ),
             MenuItem("host", "Host online game"),
             MenuItem("join", "Join online game"),
+            MenuItem("resume-host", "Resume hosting"),
+            MenuItem("rejoin", "Rejoin online game"),
             MenuItem("whatsnew", "What's new"),
             MenuItem("help", "Help"),
             MenuItem("stats", "Statistics"),
@@ -1160,6 +1171,42 @@ class MenuScreen(Screen):
         item = menu.item("continue")
         item.label = "View last game" if (snapshot or {}).get("finished") else "Continue last game"
         menu.set_visible("continue", snapshot is not None)
+        menu.set_visible("resume-host", load_online_snapshot() is not None)
+        menu.set_visible("rejoin", bool(load_settings().get("last_online")))
+
+    async def _resume_host(self) -> None:
+        """Reopen an unfinished online match; seats stay reserved by device."""
+        snap = load_online_snapshot()
+        if not snap:
+            return
+        meta = snap.get("online_host") or {}
+        conf = snap.get("config") or {}
+        config = GameConfig(
+            difficulties=conf.get("difficulties", []),
+            mode="normal",
+            rules=conf.get("rules", "official"),
+            n_games=int(snap.get("n_games", 1)),
+        )
+        server = net.HostServer(
+            str(meta.get("host_name") or net.player_name() or "Host")
+        )
+        server.started = True
+        players = snap.get("players", [])
+        for idx, dev in enumerate(snap.get("uuids", [])):
+            if idx == 0 or not dev:
+                continue
+            name = players[idx].get("name", "Player") if idx < len(players) else "Player"
+            server.seats.append(net.Seat(uuid=str(dev), name=str(name)))
+        server._last_state = {k: v for k, v in snap.items() if k != "online_host"}
+        try:
+            await server.start()
+        except OSError as exc:
+            self.app.notify(f"Could not open a port: {exc}", severity="error")
+            return
+        room = str(meta.get("room") or net.make_room_code())
+        server.relay = net.RelaySlots(server, room)
+        self.app.run_worker(server.relay.run(), exclusive=False)
+        self.app.push_screen(OnlineHostScreen(config, server, snapshot=snap))
 
     def _update_info(self) -> None:
         menu = self.query_one(AsciiMenu)
@@ -1225,6 +1272,11 @@ class MenuScreen(Screen):
             app.push_screen(HostLobbyScreen())
         elif event.item_id == "join":
             app.push_screen(JoinLobbyScreen())
+        elif event.item_id == "resume-host":
+            self.run_worker(self._resume_host(), exclusive=False)
+        elif event.item_id == "rejoin":
+            last = load_settings().get("last_online") or {}
+            app.push_screen(JoinLobbyScreen(prefill=str(last.get("target", "")), auto=True))
         elif event.item_id == "whatsnew":
             app.push_screen(TextPage("What's new", changelog_text()))
         elif event.item_id == "help":
@@ -2840,10 +2892,20 @@ class JoinLobbyScreen(Screen):
             yield Static("", id="join-status", markup=True)
         yield ActionBar([("enter connect", "connect"), ("esc back", "leave")], id="join-footer")
 
+    def __init__(self, prefill: str = "", auto: bool = False) -> None:
+        super().__init__()
+        self._prefill = prefill
+        self._auto = auto
+        self._target = ""
+
     def on_mount(self) -> None:
         self.client: net.GameClient | None = None
         self._handed_over = False
+        if self._prefill:
+            self.query_one("#join-address", Input).value = self._prefill
         self.query_one("#join-address", Input).focus()
+        if self._auto and self._prefill and (net.player_name() or ""):
+            self.call_after_refresh(self.action_connect)
 
     @on(Input.Submitted)
     def _submitted(self, event: Input.Submitted) -> None:
@@ -2874,6 +2936,7 @@ class JoinLobbyScreen(Screen):
             )
             return
         net.save_player_name(name)
+        self._target = address
         self.client = net.GameClient(address, name)
         self.query_one("#join-status", Static).update("Connecting...")
         self.app.run_worker(self.client.run(), exclusive=False)
@@ -2901,6 +2964,10 @@ class JoinLobbyScreen(Screen):
             elif kind == "msg":
                 if payload.get("t") == "state" and payload.get("state"):
                     self._handed_over = True
+                    # Remember the session so the menu offers 'Rejoin online game'.
+                    settings = load_settings()
+                    settings["last_online"] = {"target": self._target}
+                    save_settings(settings)
                     app = self.app
                     assert isinstance(app, YahtzeeApp)
                     app.pop_screen()
@@ -2916,43 +2983,66 @@ class JoinLobbyScreen(Screen):
 class OnlineHostScreen(GameScreen):
     """The host runs the real game; remote players act through the server."""
 
-    def __init__(self, config: GameConfig, server: net.HostServer) -> None:
-        super().__init__(config)
-        self.server = server
-        # Insert the remote humans between the host and the bots.
-        host = self.players[0]
-        host.name = server.host_name
-        used_colors = {p.color for p in self.players}
-        free = [c for c in PLAYER_COLOR_POOL if c not in used_colors]
-        remotes = []
+    def __init__(
+        self,
+        config: GameConfig,
+        server: net.HostServer,
+        snapshot: dict | None = None,
+    ) -> None:
+        self._resumed = snapshot is not None
         self._uuid_by_player: dict[int, str] = {}
-        for i, seat in enumerate(server.seats):
-            color = free[i % len(free)] if free else PLAYER_COLOR_POOL[0]
-            remotes.append(
-                Player(seat.name, is_bot=False, card=Scorecard(config.rules), color=color)
-            )
-        self.players = [host] + remotes + self.players[1:]
-        for idx, player in enumerate(self.players):
-            for seat in server.seats:
-                if player.name == seat.name and not player.is_bot and idx != 0:
-                    self._uuid_by_player[idx] = seat.uuid
-        self.game = Game(self.players, seed=config.seed)
+        if snapshot is not None:
+            super().__init__(config, snapshot=dict(snapshot, log=[]))
+            self.server = server
+            for idx, dev in enumerate(snapshot.get("uuids", [])):
+                if idx > 0 and dev:
+                    self._uuid_by_player[idx] = str(dev)
+        else:
+            super().__init__(config)
+            self.server = server
+            # Insert the remote humans between the host and the bots.
+            host = self.players[0]
+            host.name = server.host_name
+            used_colors = {p.color for p in self.players}
+            free = [c for c in PLAYER_COLOR_POOL if c not in used_colors]
+            remotes = []
+            for i, seat in enumerate(server.seats):
+                color = free[i % len(free)] if free else PLAYER_COLOR_POOL[0]
+                remotes.append(
+                    Player(seat.name, is_bot=False, card=Scorecard(config.rules), color=color)
+                )
+            self.players = [host] + remotes + self.players[1:]
+            for idx, player in enumerate(self.players):
+                for seat in server.seats:
+                    if player.name == seat.name and not player.is_bot and idx != 0:
+                        self._uuid_by_player[idx] = seat.uuid
+            self.game = Game(self.players, seed=config.seed)
         self._takeover: set[str] = set()
         self._share_buffer: list[str] = []
 
     def on_mount(self) -> None:
         super().on_mount()
         self.run_worker(self._consume(), exclusive=False)
-        self.call_after_refresh(
-            self.log_write,
-            "[b]Online match![/b] You are hosting. The game waits for absent "
-            "players as long as you keep it open; press [b]b[/b] during their "
-            "turn to let a bot fill in until they return.",
-        )
+        if self._resumed:
+            room = getattr(getattr(self.server, "relay", None), "room", None)
+            code_part = f" with code [b]{room}[/b]" if room else ""
+            self.call_after_refresh(
+                self.log_write,
+                f"[b]Match resumed![/b] Players can rejoin{code_part}; the game "
+                "waits for them. Press [b]b[/b] during an absent player's turn "
+                "to let a bot fill in.",
+            )
+        else:
+            self.call_after_refresh(
+                self.log_write,
+                "[b]Online match![/b] You are hosting. The game waits for absent "
+                "players as long as you keep it open; press [b]b[/b] during their "
+                "turn to let a bot fill in until they return.",
+            )
         self._net_sync()
 
     def checkpoint(self) -> None:
-        pass  # online matches are not saved/resumed (v1)
+        pass  # persisted via _net_sync; the offline save slot stays untouched
 
     def _uuid_of(self, player: Player) -> str | None:
         for idx, dev in self._uuid_by_player.items():
@@ -2980,8 +3070,22 @@ class OnlineHostScreen(GameScreen):
 
     def _net_sync(self) -> None:
         events, self._share_buffer = self._share_buffer, []
-        msg = {"t": "state", "state": self._net_state(), "events": events}
+        state = self._net_state()
+        msg = {"t": "state", "state": state, "events": events}
         self.run_worker(self.server.broadcast(msg), exclusive=False)
+        # Persist so 'Resume hosting' can reopen this match after a restart.
+        if state.get("finished"):
+            clear_online_snapshot()
+        else:
+            save_online_snapshot(
+                dict(
+                    state,
+                    online_host={
+                        "room": getattr(getattr(self.server, "relay", None), "room", None),
+                        "host_name": self.server.host_name,
+                    },
+                )
+            )
 
     # -- remote turns ------------------------------------------------------
 
@@ -3080,7 +3184,10 @@ class OnlineHostScreen(GameScreen):
 
     def action_to_menu(self) -> None:
         self.run_worker(self.server.stop(), exclusive=False)
-        self.log_write("Match closed.")
+        if not self.game.finished:
+            self.log_write("Match paused; reopen it with 'Resume hosting' in the menu.")
+        else:
+            self.log_write("Match closed.")
         self.app.pop_screen()
 
     def action_quit_app(self) -> None:
@@ -3111,6 +3218,20 @@ class OnlineClientScreen(GameScreen):
         self._view_only = False
         self._prev_history = len(self.players[self.local_idx].history)
         self._match_done = False
+        # Viewer-relative colors: YOU are purple on your own screen. The host
+        # serializes its own perspective, so remap locally and remember the
+        # mapping to rewrite incoming (host-colored) log lines too.
+        self._color_map: dict[str, str] = {}
+        others = 0
+        for i, p in enumerate(self.players):
+            if i == self.local_idx:
+                new = ACCENT
+            else:
+                new = PLAYER_COLOR_POOL[others % len(PLAYER_COLOR_POOL)]
+                others += 1
+            if p.color and p.color != new:
+                self._color_map[p.color] = new
+            p.color = new
 
     def on_mount(self) -> None:
         super().on_mount()
@@ -3148,9 +3269,28 @@ class OnlineClientScreen(GameScreen):
                 except Exception as exc:  # noqa: BLE001
                     self.log_write(f"[red]State update failed: {exc}[/red]")
 
+    def _localize(self, line: str) -> str:
+        """Rewrite host-perspective player colors into this viewer's."""
+        for i, old in enumerate(self._color_map):
+            line = line.replace(old, f"\x00{i}\x00")
+        for i, new in enumerate(self._color_map.values()):
+            line = line.replace(f"\x00{i}\x00", new)
+        return line
+
+    async def _animate_net_roll(self) -> None:
+        """Visually roll the unheld dice toward the state we already hold."""
+        self._rolling = True
+        try:
+            await self._animate_roll()
+        finally:
+            self._rolling = False
+        self.refresh_all()
+
     def _apply_state(self, snap: dict, events: list[str]) -> None:
         if not snap:
             return
+        prev_sig = (self.game_no, self.game.round, self.game.current_idx)
+        prev_rolls = self.game.turn.rolls_used
         for player, pdata in zip(self.players, snap.get("players", [])):
             player.card.boxes = [
                 b if b is None else int(b) for b in pdata.get("boxes", [None] * 13)
@@ -3172,6 +3312,16 @@ class OnlineClientScreen(GameScreen):
         game.turn.rolls_used = int(turn.get("rolls_used", 0))
         self.game_no = int(snap.get("game_no", 1))
         game.finished = bool(snap.get("finished"))
+        # A roll happened remotely (or our own roll came back): animate the
+        # dice instead of snapping, so rolls look alive on this side too.
+        new_sig = (self.game_no, game.round, game.current_idx)
+        if (
+            not game.finished
+            and game.turn.rolls_used > 0
+            and (new_sig != prev_sig or game.turn.rolls_used > prev_rolls)
+            and not self._rolling
+        ):
+            self.run_worker(self._animate_net_roll(), exclusive=False)
         # Round headers, locally generated like offline
         key = (self.game_no, game.round)
         if not game.finished and self._last_logged != key:
@@ -3181,7 +3331,7 @@ class OnlineClientScreen(GameScreen):
                 f"[dim]── {game_part}Round {game.round}/13 " + "─" * 18 + "[/dim]"
             )
         for line in events:
-            self.log_write(line)
+            self.log_write(self._localize(line))
         # Record my own finished games locally (per-game stats)
         my_history = len(self.human.history)
         if my_history > self._prev_history:
@@ -3189,6 +3339,9 @@ class OnlineClientScreen(GameScreen):
             self._record_finished_game(self.human.history[-1])
         if game.finished and not self._match_done:
             self._match_done = True
+            settings = load_settings()
+            if settings.pop("last_online", None) is not None:
+                save_settings(settings)
             self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
         self.refresh_all()
 
