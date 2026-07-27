@@ -88,10 +88,12 @@ def quick_sync_update(fetch_timeout: int = 4) -> bool:
             flush=True,
         )
         deps_before = _git("show", "HEAD:pyproject.toml").stdout
-        pull = _git("pull", "--ff-only", "--quiet", timeout=60)
-        if pull.returncode != 0:
-            print("Update failed; starting the current version.", flush=True)
+        ok, reason = _pull_or_repair()
+        if not ok:
+            print(f"Update failed ({reason}); starting the current version.", flush=True)
             return False
+        if reason:
+            print(f"Repaired a blocked update ({reason}).", flush=True)
         if deps_before != _git("show", "HEAD:pyproject.toml").stdout:
             print("Refreshing dependencies...", flush=True)
             _reinstall_deps()
@@ -115,9 +117,9 @@ def check_and_update() -> UpdateResult:
         if int(behind.stdout.strip()) == 0:
             return UpdateResult("uptodate", "You are on the latest version.")
         deps_before = _git("show", "HEAD:pyproject.toml").stdout
-        pull = _git("pull", "--ff-only", "--quiet", timeout=60)
-        if pull.returncode != 0:
-            return UpdateResult("failed", FAILED_MSG)
+        ok, reason = _pull_or_repair()
+        if not ok:
+            return UpdateResult("failed", f"Update failed ({reason}). Run /update to try again.")
         deps_after = _git("show", "HEAD:pyproject.toml").stdout
         if deps_before != deps_after:
             _reinstall_deps()
@@ -133,10 +135,35 @@ def check_and_update() -> UpdateResult:
         return UpdateResult("failed", f"Update failed ({exc}). Run /update to try again.")
 
 
+def _pull_or_repair() -> tuple[bool, str]:
+    """Fast-forward pull; when blocked, repair the app-owned checkout.
+
+    ~/.yahtzee belongs to the app, so a blocked fast-forward (locally
+    edited files, a stray merge state) is healed with a hard reset to
+    upstream instead of failing forever. Returns (ok, reason); reason is
+    empty for a clean pull.
+    """
+    pull = _git("pull", "--ff-only", "--quiet", timeout=60)
+    if pull.returncode == 0:
+        return True, ""
+    lines = (pull.stderr or pull.stdout or "").strip().splitlines()
+    reason = lines[0] if lines else "unknown error"
+    heal = _git("reset", "--hard", "@{u}")
+    return heal.returncode == 0, reason
+
+
 def _reinstall_deps() -> None:
     """Refresh dependencies after an update that changed pyproject.toml."""
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO_DIR)],
         capture_output=True,
         timeout=300,
     )
+    if result.returncode != 0:
+        # Pip-less venv (Alpine/iSH): drive our venv with the outside pip.
+        subprocess.run(
+            ["python3", "-m", "pip", "--python", sys.executable,
+             "install", "--no-cache-dir", "-e", str(REPO_DIR)],
+            capture_output=True,
+            timeout=1800,
+        )

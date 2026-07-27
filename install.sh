@@ -189,9 +189,16 @@ else
     # via `pip --python`. Alpine 3.14 ships pip 20; upgrade it (user site) first.
     if ! "$PYTHON" -c 'import pip; from pip._vendor.packaging.version import Version; import sys; sys.exit(0 if Version(pip.__version__) >= Version("22.3") else 1)' 2>/dev/null; then
         say "Upgrading pip (needed for editable installs)..."
-        "$PYTHON" -m pip install --user -q --disable-pip-version-check -U pip
+        "$PYTHON" -m pip install --user -q --disable-pip-version-check --no-warn-script-location -U pip
     fi
-    "$PYTHON" -m pip --python "$VENV/bin/python" install -q --disable-pip-version-check -e "$APP_DIR"
+    if [ "$IS_ISH" = 1 ]; then
+        say "iSH heads-up: this step unpacks thousands of files and can take 10-30"
+        say "minutes on a phone. It is NOT stuck. Keep iSH in the foreground and"
+        say "the screen awake; iOS pauses it in the background."
+    fi
+    # Not -q on purpose: on iSH this is the slow step and progress reassures.
+    # --no-cache-dir halves the file writes there.
+    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir -e "$APP_DIR"
 fi
 
 # --- command on PATH -----------------------------------------------------

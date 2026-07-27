@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.6
+
+- The auto-updater now says WHY an update failed and heals a blocked
+  checkout itself (hard reset to upstream; ~/.yahtzee is app-owned).
+- Dependency refreshes after updates work on pip-less venvs (iSH/Alpine).
+- iSH install: visible pip progress, a heads-up that the slow step can
+  take 10-30 minutes on a phone, and --no-cache-dir to halve the writes.
+
 ## v1.7.5
 
 - One install line for every platform: curl-or-wget fallback piped to sh.
