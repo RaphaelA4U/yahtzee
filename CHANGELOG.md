@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.9
+
+- iSH fix: a virtualenv made by an older installer could not see apk's
+  numpy, so pip tried to compile numpy from source (impossible there,
+  no compiler). The installer now detects such a venv and recreates it,
+  and forbids source builds on Alpine outright (--only-binary=:all:).
+
 ## v1.7.7
 
 - Root cause of every 'Update failed' since v1.7.4: bin/yahtzee was

@@ -167,6 +167,14 @@ if [ -e "$VENV" ] && ! py_ok "$VENV/bin/python"; then
     say "Existing virtualenv is broken or on an old Python; recreating..."
     rm -rf "$VENV"
 fi
+# Alpine/iSH: the venv MUST see apk's numpy (system site-packages). A venv
+# made by an older installer (or plain `python3 -m venv`) does not, and pip
+# then tries to compile numpy from source, which cannot work there.
+if [ "$IS_ALPINE" = 1 ] && [ -e "$VENV" ] \
+        && ! "$VENV/bin/python" -c 'import numpy' 2>/dev/null; then
+    say "Existing virtualenv cannot see apk's numpy; recreating it..."
+    rm -rf "$VENV"
+fi
 if [ ! -e "$VENV" ]; then
     say "Creating virtualenv..."
     if [ "$IS_ALPINE" = 1 ]; then
@@ -205,7 +213,9 @@ else
     # Not -q on purpose: on iSH this is the slow step and progress reassures.
     # --no-cache-dir and --no-compile cut the file writes and skip bytecode
     # compilation, the two things iSH's emulated filesystem/CPU choke on.
-    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir --no-compile -e "$APP_DIR"
+    # --only-binary=:all: forbids doomed source builds (no compiler on iSH);
+    # every dependency we need ships a pure-Python wheel or comes from apk.
+    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir --no-compile --only-binary=:all: -e "$APP_DIR"
 fi
 
 # --- command on PATH -----------------------------------------------------
