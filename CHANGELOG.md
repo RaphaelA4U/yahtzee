@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.3
+
+- Dependency refreshes after updates keep the [solver] extra on
+  machines that have numpy, so solver metadata stays correct.
+
 ## v1.8.2
 
 - Lite mode actually starts on iSH now: one remaining module-level

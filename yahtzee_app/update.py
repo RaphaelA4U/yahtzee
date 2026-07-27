@@ -154,8 +154,15 @@ def _pull_or_repair() -> tuple[bool, str]:
 
 def _reinstall_deps() -> None:
     """Refresh dependencies after an update that changed pyproject.toml."""
+    target = str(REPO_DIR)
+    try:
+        import numpy  # noqa: F401 - solver machines keep the [solver] extra
+
+        target += "[solver]"
+    except Exception:  # noqa: BLE001 - lite mode (iSH): no numpy requirement
+        pass
     result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "-e", str(REPO_DIR)],
+        [sys.executable, "-m", "pip", "install", "-q", "-e", target],
         capture_output=True,
         timeout=300,
     )
@@ -163,7 +170,7 @@ def _reinstall_deps() -> None:
         # Pip-less venv (Alpine/iSH): drive our venv with the outside pip.
         subprocess.run(
             ["python3", "-m", "pip", "--python", sys.executable,
-             "install", "--no-cache-dir", "-e", str(REPO_DIR)],
+             "install", "--no-cache-dir", "-e", target],
             capture_output=True,
             timeout=1800,
         )
