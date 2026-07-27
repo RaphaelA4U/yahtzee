@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.7.7
+
+- Root cause of every 'Update failed' since v1.7.4: bin/yahtzee was
+  committed without its executable bit, so the installer's chmod made
+  every checkout permanently dirty and v1.7.4 (which edited that file)
+  blocked the fast-forward. The bit is now committed; the installer
+  also repairs blocked checkouts itself, like the in-app updater.
+- Faster iSH installs: --no-compile and --no-cache-dir skip bytecode
+  compilation and cache writes, the two things iSH's emulated CPU and
+  filesystem choke on.
+
 ## v1.7.6
 
 - The auto-updater now says WHY an update failed and heals a blocked

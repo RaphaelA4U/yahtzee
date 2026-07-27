@@ -147,7 +147,13 @@ fi
 # --- clone / update ------------------------------------------------------
 if [ -d "$APP_DIR/.git" ]; then
     say "Existing install found in $APP_DIR; updating..."
-    git -C "$APP_DIR" pull --ff-only
+    if ! git -C "$APP_DIR" pull --ff-only; then
+        # The checkout is app-owned; a blocked fast-forward gets repaired.
+        say "Update blocked; repairing the checkout (reset to upstream)..."
+        git -C "$APP_DIR" fetch origin
+        git -C "$APP_DIR" reset --hard '@{u}' 2>/dev/null \
+            || git -C "$APP_DIR" reset --hard origin/main
+    fi
 elif [ -e "$APP_DIR" ] && [ ! -d "$APP_DIR/.git" ] && [ -n "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
     err "$APP_DIR exists but is not a yahtzee checkout; move it aside and re-run."
     exit 1
@@ -189,16 +195,17 @@ else
     # via `pip --python`. Alpine 3.14 ships pip 20; upgrade it (user site) first.
     if ! "$PYTHON" -c 'import pip; from pip._vendor.packaging.version import Version; import sys; sys.exit(0 if Version(pip.__version__) >= Version("22.3") else 1)' 2>/dev/null; then
         say "Upgrading pip (needed for editable installs)..."
-        "$PYTHON" -m pip install --user -q --disable-pip-version-check --no-warn-script-location -U pip
+        "$PYTHON" -m pip install --user -q --disable-pip-version-check --no-warn-script-location --no-cache-dir --no-compile -U pip
     fi
     if [ "$IS_ISH" = 1 ]; then
-        say "iSH heads-up: this step unpacks thousands of files and can take 10-30"
-        say "minutes on a phone. It is NOT stuck. Keep iSH in the foreground and"
-        say "the screen awake; iOS pauses it in the background."
+        say "iSH heads-up: this step unpacks thousands of files and takes a while"
+        say "on a phone. It is NOT stuck. Keep iSH in the foreground and the"
+        say "screen awake; iOS pauses it in the background."
     fi
     # Not -q on purpose: on iSH this is the slow step and progress reassures.
-    # --no-cache-dir halves the file writes there.
-    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir -e "$APP_DIR"
+    # --no-cache-dir and --no-compile cut the file writes and skip bytecode
+    # compilation, the two things iSH's emulated filesystem/CPU choke on.
+    "$PYTHON" -m pip --python "$VENV/bin/python" install --disable-pip-version-check --no-cache-dir --no-compile -e "$APP_DIR"
 fi
 
 # --- command on PATH -----------------------------------------------------
