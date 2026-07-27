@@ -17,8 +17,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from typing import TYPE_CHECKING
+
 from .game import Player
-from .solver.oracle import Oracle
+
+if TYPE_CHECKING:
+    from .solver.oracle import Oracle
 
 # Tunables, set by arena experiments (tools/arena.py, 3000-match runs):
 # exact final-round win-probability play alone scored best (51.25% vs pure

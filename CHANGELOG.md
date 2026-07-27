@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.2
+
+- Lite mode actually starts on iSH now: one remaining module-level
+  solver import (winmode) still pulled numpy in at startup and crashed
+  the app before the menu. Verified against a numpy stub that fails
+  exactly like iSH's.
+
 ## v1.8.1
 
 - Your own card is now always the first card on your screen, also as an
