@@ -27,6 +27,16 @@ err() { printf '\033[31m[yahtzee] Error:\033[0m %s\n' "$1" >&2; }
 
 # --- platform / package manager detection --------------------------------
 OS="$(uname -s 2>/dev/null || echo unknown)"
+
+# Git Bash / MSYS / Cygwin: hand over to the native PowerShell installer so
+# the same one-liner works on Windows too (venv layout differs there).
+case "$OS" in
+    MINGW*|MSYS*|CYGWIN*)
+        say "Windows detected; handing over to the PowerShell installer..."
+        exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \
+            "irm https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.ps1 | iex"
+        ;;
+esac
 IS_ALPINE=0; [ -f /etc/alpine-release ] && IS_ALPINE=1
 IS_ISH=0; case "$(uname -r 2>/dev/null)" in *ish*) IS_ISH=1 ;; esac
 

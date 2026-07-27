@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.5
+
+- One install line for every platform: curl-or-wget fallback piped to sh.
+  Works on macOS, Linux, WSL, iSH, and web/SSH terminals; in Git Bash on
+  Windows install.sh now hands over to the PowerShell installer.
+
 ## v1.7.4
 
 - Python 3.9 is now supported (was 3.10+): the code never needed 3.10,

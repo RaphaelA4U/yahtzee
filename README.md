@@ -12,8 +12,17 @@ state, for an expected score of ~254.6.
 
 ## Install
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | bash
+One line, every platform (macOS, Linux, WSL, iSH on iOS, web/SSH terminals,
+and Git Bash on Windows):
+
+```sh
+U=https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh; (curl -fsSL $U 2>/dev/null || wget -qO- $U) | sh
+```
+
+On native Windows without Git Bash, use PowerShell instead:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.ps1 | iex
 ```
 
 Then start the game with:
@@ -108,16 +117,13 @@ classic paper pad. The highest match total wins.
 - Quit with `ctrl+q` (never by accident); dice use the OS cryptographic
   random generator.
 - After an update the app shows what's new.
-- macOS and Linux install with the bash one-liner above. Windows
-  (PowerShell, native):
-  `iwr -useb https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.ps1 | iex`
-  (needs git + Python 3.9+; Windows Terminal recommended). WSL with the
-  bash one-liner works too.
-- iSH (iOS) and Alpine, which have no bash or curl by default:
-  `wget -qO- https://raw.githubusercontent.com/RaphaelA4U/yahtzee/main/install.sh | sh`
-  The installer uses apk for python3/pip/numpy and skips the (very slow on
-  iSH) ensurepip step. The first game builds solver tables once; on iSH
-  give that a few minutes.
+- The one-liner works everywhere because it falls back from curl to wget
+  (iSH has no curl) and the installer is plain POSIX sh (iSH has no bash).
+  In Git Bash on Windows it hands over to the PowerShell installer
+  automatically (needs git + Python 3.9+; Windows Terminal recommended).
+- On iSH/Alpine the installer uses apk for python3/pip/numpy and skips the
+  (very slow on iSH) ensurepip step. The first game builds solver tables
+  once; on iSH give that a few minutes.
 - On Linux, open a new shell (or `source ~/.bashrc`) after installing so
   the `yahtzee` command is found.
 - `python -m tools.arena` pits strategies against each other headlessly;
