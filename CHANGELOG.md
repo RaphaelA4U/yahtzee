@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.9.0
+
+- New CLI flags for scripted online play: --host CODE hosts with a fixed
+  room code (and resumes an unfinished match with that code), --join CODE
+  joins one directly, and --name sets your player name. Built for chat
+  battles orchestrated from BM Beheer, handy for any automation.
+
 ## v1.8.3
 
 - Dependency refreshes after updates keep the [solver] extra on

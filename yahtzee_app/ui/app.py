@@ -1175,38 +1175,9 @@ class MenuScreen(Screen):
         menu.set_visible("rejoin", bool(load_settings().get("last_online")))
 
     async def _resume_host(self) -> None:
-        """Reopen an unfinished online match; seats stay reserved by device."""
-        snap = load_online_snapshot()
-        if not snap:
-            return
-        meta = snap.get("online_host") or {}
-        conf = snap.get("config") or {}
-        config = GameConfig(
-            difficulties=conf.get("difficulties", []),
-            mode="normal",
-            rules=conf.get("rules", "official"),
-            n_games=int(snap.get("n_games", 1)),
-        )
-        server = net.HostServer(
-            str(meta.get("host_name") or net.player_name() or "Host")
-        )
-        server.started = True
-        players = snap.get("players", [])
-        for idx, dev in enumerate(snap.get("uuids", [])):
-            if idx == 0 or not dev:
-                continue
-            name = players[idx].get("name", "Player") if idx < len(players) else "Player"
-            server.seats.append(net.Seat(uuid=str(dev), name=str(name)))
-        server._last_state = {k: v for k, v in snap.items() if k != "online_host"}
-        try:
-            await server.start()
-        except OSError as exc:
-            self.app.notify(f"Could not open a port: {exc}", severity="error")
-            return
-        room = str(meta.get("room") or net.make_room_code())
-        server.relay = net.RelaySlots(server, room)
-        self.app.run_worker(server.relay.run(), exclusive=False)
-        self.app.push_screen(OnlineHostScreen(config, server, snapshot=snap))
+        app = self.app
+        assert isinstance(app, YahtzeeApp)
+        await app.resume_hosting()
 
     def _update_info(self) -> None:
         menu = self.query_one(AsciiMenu)
@@ -2550,15 +2521,68 @@ class YahtzeeApp(App):
         no_update: bool = False,
         initial: dict | None = None,
         resume: bool = False,
+        online: tuple[str, str] | None = None,
     ) -> None:
         super().__init__(ansi_color=True)
         self.no_update = no_update
         self.initial = initial
         self.resume = resume
+        self.online = online  # ("host"|"join", ROOMCODE) from the CLI
         self._restart_args: list[str] | None = None
+
+    async def resume_hosting(self) -> bool:
+        """Reopen an unfinished online match; seats stay reserved by device."""
+        snap = load_online_snapshot()
+        if not snap:
+            return False
+        meta = snap.get("online_host") or {}
+        conf = snap.get("config") or {}
+        config = GameConfig(
+            difficulties=conf.get("difficulties", []),
+            mode="normal",
+            rules=conf.get("rules", "official"),
+            n_games=int(snap.get("n_games", 1)),
+        )
+        server = net.HostServer(
+            str(meta.get("host_name") or net.player_name() or "Host")
+        )
+        server.started = True
+        players = snap.get("players", [])
+        for idx, dev in enumerate(snap.get("uuids", [])):
+            if idx == 0 or not dev:
+                continue
+            name = players[idx].get("name", "Player") if idx < len(players) else "Player"
+            server.seats.append(net.Seat(uuid=str(dev), name=str(name)))
+        server._last_state = {k: v for k, v in snap.items() if k != "online_host"}
+        try:
+            await server.start()
+        except OSError as exc:
+            self.notify(f"Could not open a port: {exc}", severity="error")
+            return False
+        room = str(meta.get("room") or net.make_room_code())
+        server.relay = net.RelaySlots(server, room)
+        self.run_worker(server.relay.run(), exclusive=False)
+        self.push_screen(OnlineHostScreen(config, server, snapshot=snap))
+        return True
+
+    async def _online_entry(self) -> None:
+        """CLI-driven online start: --host CODE / --join CODE."""
+        role, code = self.online or ("", "")
+        if role == "join":
+            self.push_screen(JoinLobbyScreen(prefill=code, auto=True))
+            return
+        # Hosting: an unfinished match with this code resumes seamlessly, so
+        # a killed session (chat battles run in tmux) picks up where it was.
+        snap = load_online_snapshot()
+        snap_room = ((snap or {}).get("online_host") or {}).get("room")
+        if snap and snap_room == code and await self.resume_hosting():
+            return
+        self.push_screen(HostLobbyScreen(room=code))
 
     def on_mount(self) -> None:
         self.push_screen(MenuScreen())
+        if self.online:
+            self.run_worker(self._online_entry(), exclusive=False)
         if self.initial:
             config = GameConfig(
                 difficulties=self.initial["difficulties"],
@@ -2676,8 +2700,13 @@ def _changelog_summary(version: str, max_lines: int = 6) -> str | None:
     return "\n".join(out) if out else None
 
 
-def run(no_update: bool = False, initial: dict | None = None, resume: bool = False) -> None:
-    app = YahtzeeApp(no_update=no_update, initial=initial, resume=resume)
+def run(
+    no_update: bool = False,
+    initial: dict | None = None,
+    resume: bool = False,
+    online: tuple[str, str] | None = None,
+) -> None:
+    app = YahtzeeApp(no_update=no_update, initial=initial, resume=resume, online=online)
     app.run()
     if app._restart_args is not None:
         # Terminal state is restored at this point; swap in the new code.
@@ -2698,6 +2727,12 @@ def run(no_update: bool = False, initial: dict | None = None, resume: bool = Fal
 
 class HostLobbyScreen(Screen):
     """Host a game: shows shareable addresses and who has joined."""
+
+    def __init__(self, room: str | None = None) -> None:
+        super().__init__()
+        # A pre-agreed room code (chat battles): reused instead of rerolled,
+        # so joiners who got the code out-of-band always land in this match.
+        self._fixed_room = (room or "").upper() or None
 
     BINDINGS = [
         Binding("escape", "leave", "Back"),
@@ -2755,7 +2790,7 @@ class HostLobbyScreen(Screen):
     async def _new_room(self) -> None:
         if getattr(self.server, "relay", None) is not None:
             self.server.relay.stop()
-        self.room = net.make_room_code()
+        self.room = self._fixed_room or net.make_room_code()
         self.server.relay = net.RelaySlots(self.server, self.room)
         self.app.run_worker(self.server.relay.run(), exclusive=False)
         self.query_one("#lobby-code", Static).update("[dim]Getting a room code...[/dim]")

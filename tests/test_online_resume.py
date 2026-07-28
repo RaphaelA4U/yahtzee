@@ -204,3 +204,39 @@ async def test_lite_mode_without_solver(monkeypatch):
         screen.action_roll()
         await pilot.pause(1.2)
         assert screen.game.turn.rolls_used == 1  # rolling works fine
+
+
+@pytest.mark.asyncio
+async def test_cli_host_flag_uses_fixed_room():
+    from yahtzee_app.ui.app import HostLobbyScreen, YahtzeeApp
+
+    app = YahtzeeApp(no_update=True, online=("host", "ABC234"))
+    async with app.run_test(size=(170, 45)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, HostLobbyScreen):
+                break
+        assert isinstance(app.screen, HostLobbyScreen)
+        lobby = app.screen
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if lobby.room:
+                break
+        assert lobby.room == "ABC234"
+        await lobby.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_cli_join_flag_prefills_lobby():
+    from textual.widgets import Input
+
+    from yahtzee_app.ui.app import JoinLobbyScreen, YahtzeeApp
+
+    app = YahtzeeApp(no_update=True, online=("join", "XYZ234"))
+    async with app.run_test(size=(170, 45)) as pilot:
+        for _ in range(40):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, JoinLobbyScreen):
+                break
+        assert isinstance(app.screen, JoinLobbyScreen)
+        assert app.screen.query_one("#join-address", Input).value == "XYZ234"

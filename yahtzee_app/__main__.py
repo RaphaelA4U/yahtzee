@@ -44,6 +44,19 @@ def main() -> None:
         "--games", type=int, metavar="G", help="games per match (1-6, a column each)"
     )
     parser.add_argument("--seed", type=int, metavar="S", help="seed for the dice")
+    parser.add_argument(
+        "--name", metavar="NAME",
+        help="set your player name (saved in the active profile)",
+    )
+    parser.add_argument(
+        "--host", metavar="CODE",
+        help="host an online game with this fixed room code (6 letters); an "
+        "unfinished match with the same code resumes automatically",
+    )
+    parser.add_argument(
+        "--join", metavar="CODE",
+        help="join an online game with this room code right away",
+    )
     args = parser.parse_args()
 
     if args.profile:
@@ -125,7 +138,26 @@ def main() -> None:
 
     from .ui.app import run
 
-    run(no_update=args.no_update, initial=initial, resume=args.resume)
+    online = None
+    if args.host or args.join:
+        from . import net
+
+        role = "host" if args.host else "join"
+        code = (args.host or args.join).strip().upper()
+        if not net.looks_like_code(code):
+            print(f"Not a valid room code: {code} (6 letters/digits, e.g. ABC234)")
+            raise SystemExit(2)
+        online = (role, code)
+        initial = None
+
+    if args.name:
+        from . import config
+
+        settings = config.load_settings()
+        settings["player_name"] = args.name.strip()[:16]
+        config.save_settings(settings)
+
+    run(no_update=args.no_update, initial=initial, resume=args.resume, online=online)
 
 
 if __name__ == "__main__":
