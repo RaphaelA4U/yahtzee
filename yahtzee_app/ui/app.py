@@ -191,7 +191,12 @@ class GameConfig:
 
 def build_players(config: GameConfig) -> list[Player]:
     players = [
-        Player(HUMAN_NAME, is_bot=False, card=Scorecard(config.rules), color=ACCENT)
+        Player(
+            HUMAN_NAME,
+            is_bot=False,
+            card=Scorecard(config.rules),
+            color=net.player_color() or ACCENT,
+        )
     ]
     names = sample_bot_names(len(config.difficulties))
     colors = random.sample(PLAYER_COLOR_POOL, len(config.difficulties))
@@ -3008,7 +3013,7 @@ class JoinLobbyScreen(Screen):
             return
         net.save_player_name(name)
         self._target = address
-        self.client = net.GameClient(address, name)
+        self.client = net.GameClient(address, name, color=net.player_color())
         self.query_one("#join-status", Static).update("Connecting...")
         self.app.run_worker(self.client.run(), exclusive=False)
         self.run_worker(self._consume(), exclusive=False)
@@ -3078,7 +3083,9 @@ class OnlineHostScreen(GameScreen):
             free = [c for c in PLAYER_COLOR_POOL if c not in used_colors]
             remotes = []
             for i, seat in enumerate(server.seats):
-                color = free[i % len(free)] if free else PLAYER_COLOR_POOL[0]
+                # An explicit color from the player's hello (beheer battles:
+                # everyone wears their beheer avatar color) beats the pool.
+                color = seat.color or (free[i % len(free)] if free else PLAYER_COLOR_POOL[0])
                 remotes.append(
                     Player(seat.name, is_bot=False, card=Scorecard(config.rules), color=color)
                 )
@@ -3292,17 +3299,20 @@ class OnlineClientScreen(GameScreen):
         # Viewer-relative colors: YOU are purple on your own screen. The host
         # serializes its own perspective, so remap locally and remember the
         # mapping to rewrite incoming (host-colored) log lines too.
+        # Exception: with an explicit own color (--color, beheer battles) the
+        # host-assigned colors are shared identity - keep them verbatim.
         self._color_map: dict[str, str] = {}
-        others = 0
-        for i, p in enumerate(self.players):
-            if i == self.local_idx:
-                new = ACCENT
-            else:
-                new = PLAYER_COLOR_POOL[others % len(PLAYER_COLOR_POOL)]
-                others += 1
-            if p.color and p.color != new:
-                self._color_map[p.color] = new
-            p.color = new
+        if not net.player_color():
+            others = 0
+            for i, p in enumerate(self.players):
+                if i == self.local_idx:
+                    new = ACCENT
+                else:
+                    new = PLAYER_COLOR_POOL[others % len(PLAYER_COLOR_POOL)]
+                    others += 1
+                if p.color and p.color != new:
+                    self._color_map[p.color] = new
+                p.color = new
 
     def on_mount(self) -> None:
         super().on_mount()

@@ -49,6 +49,11 @@ def main() -> None:
         help="set your player name (saved in the active profile)",
     )
     parser.add_argument(
+        "--color", metavar="#RRGGBB",
+        help="set your fixed player color (used as-is by everyone online, "
+        "instead of the everyone-sees-themselves-purple scheme)",
+    )
+    parser.add_argument(
         "--host", metavar="CODE",
         help="host an online game with this fixed room code (6 letters); an "
         "unfinished match with the same code resumes automatically",
@@ -150,11 +155,20 @@ def main() -> None:
         online = (role, code)
         initial = None
 
-    if args.name:
+    if args.name or args.color:
+        import re as _re
+
         from . import config
 
         settings = config.load_settings()
-        settings["player_name"] = args.name.strip()[:16]
+        if args.name:
+            settings["player_name"] = args.name.strip()[:16]
+        if args.color:
+            color = args.color.strip()
+            if not _re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+                print(f"Not a valid color: {color} (expected #RRGGBB)")
+                raise SystemExit(2)
+            settings["player_color"] = color
         config.save_settings(settings)
 
     run(no_update=args.no_update, initial=initial, resume=args.resume, online=online)

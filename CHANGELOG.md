@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.10.0
+
+- New --color #RRGGBB flag: give yourself a fixed player color that
+  everyone sees as-is online (used by BM Beheer chat battles to match
+  the chat avatar colors). Without it the everyone-sees-themselves-
+  purple scheme applies as before.
+
 ## v1.9.0
 
 - New CLI flags for scripted online play: --host CODE hosts with a fixed

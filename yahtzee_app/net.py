@@ -48,6 +48,17 @@ def device_id() -> str:
     return dev
 
 
+def player_color() -> str:
+    """Explicit own color (set via --color, e.g. beheer chat battles).
+    Empty = the default viewer-relative scheme (yourself purple)."""
+    from .config import load_settings
+
+    color = str(load_settings().get("player_color") or "")
+    import re as _re
+
+    return color if _re.fullmatch(r"#[0-9a-fA-F]{6}", color) else ""
+
+
 def player_name() -> str:
     settings = load_settings()
     return str(settings.get("player_name") or "")
@@ -241,6 +252,7 @@ async def read_msg(reader: asyncio.StreamReader) -> Optional[dict]:
 class Seat:
     uuid: str
     name: str
+    color: str = ""  # explicit color from the hello (beheer battles)
     stats: dict = field(default_factory=dict)
     writer: Optional[asyncio.StreamWriter] = None
 
@@ -332,6 +344,9 @@ class HostServer:
                 name = f"{base} {n}"
                 n += 1
             seat = Seat(uuid=dev, name=name, stats=dict(hello.get("stats") or {}))
+        color = str(hello.get("color") or "")[:7]
+        if color:
+            seat.color = color
             self.seats.append(seat)
         seat.writer = writer
         await send_msg(writer, {"t": "welcome", "name": seat.name})
@@ -390,9 +405,12 @@ class GameClient:
       ("net", "up"|"down"|"gone") ("msg", dict)
     """
 
-    def __init__(self, address: str, name: str, relay: str | None = None) -> None:
+    def __init__(
+        self, address: str, name: str, relay: str | None = None, color: str = ""
+    ) -> None:
         self.address = address
         self.name = name
+        self.color = color
         self.relay = relay
         self.events: asyncio.Queue = asyncio.Queue()
         self._writer: Optional[asyncio.StreamWriter] = None
@@ -432,6 +450,7 @@ class GameClient:
                         "v": PROTOCOL_VERSION,
                         "uuid": device_id(),
                         "name": self.name,
+                        "color": self.color,
                         "stats": my_stats_summary(),
                     },
                 )
