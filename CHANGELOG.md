@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.10.1
+
+- Hotfix on v1.10.0: an indentation slip made joining a lobby fail for
+  players without an explicit color. Do not host on v1.10.0.
+
 ## v1.10.0
 
 - New --color #RRGGBB flag: give yourself a fixed player color that

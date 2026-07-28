@@ -344,10 +344,10 @@ class HostServer:
                 name = f"{base} {n}"
                 n += 1
             seat = Seat(uuid=dev, name=name, stats=dict(hello.get("stats") or {}))
+            self.seats.append(seat)
         color = str(hello.get("color") or "")[:7]
         if color:
             seat.color = color
-            self.seats.append(seat)
         seat.writer = writer
         await send_msg(writer, {"t": "welcome", "name": seat.name})
         if self.started and self._last_state is not None:
