@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.12.0
+
+- --autostart (with --host): the match begins the moment the first
+  opponent connects, so an orchestrated host never presses Enter; the
+  lobby stays open until they join.
+- Online log no longer double-prints a move: every state broadcast now
+  carries a sequence number and a client ignores a re-delivered one.
+
 ## v1.11.0
 
 - A scripted host (chat battles) now hosts a humans-only match: no bots

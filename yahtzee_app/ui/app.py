@@ -2532,7 +2532,7 @@ class YahtzeeApp(App):
         self.no_update = no_update
         self.initial = initial
         self.resume = resume
-        self.online = online  # ("host"|"join", ROOMCODE) from the CLI
+        self.online = online  # ("host"|"join", ROOMCODE, autostart) from the CLI
         self._restart_args: list[str] | None = None
 
     async def resume_hosting(self) -> bool:
@@ -2572,7 +2572,8 @@ class YahtzeeApp(App):
 
     async def _online_entry(self) -> None:
         """CLI-driven online start: --host CODE / --join CODE."""
-        role, code = self.online or ("", "")
+        role, code, *rest = self.online or ("", "", False)
+        autostart = bool(rest[0]) if rest else False
         if role == "join":
             self.push_screen(JoinLobbyScreen(prefill=code, auto=True))
             return
@@ -2582,7 +2583,7 @@ class YahtzeeApp(App):
         snap_room = ((snap or {}).get("online_host") or {}).get("room")
         if snap and snap_room == code and await self.resume_hosting():
             return
-        self.push_screen(HostLobbyScreen(room=code))
+        self.push_screen(HostLobbyScreen(room=code, autostart=autostart))
 
     def on_mount(self) -> None:
         self.push_screen(MenuScreen())
@@ -2733,11 +2734,15 @@ def run(
 class HostLobbyScreen(Screen):
     """Host a game: shows shareable addresses and who has joined."""
 
-    def __init__(self, room: str | None = None) -> None:
+    def __init__(self, room: str | None = None, autostart: bool = False) -> None:
         super().__init__()
         # A pre-agreed room code (chat battles): reused instead of rerolled,
         # so joiners who got the code out-of-band always land in this match.
         self._fixed_room = (room or "").upper() or None
+        # Auto-start (1-on-1 chat battles): begin the moment the opponent
+        # connects, so the host never has to press Enter. The lobby stays
+        # open until then, so the opponent can join whenever.
+        self._autostart = autostart
 
     BINDINGS = [
         Binding("escape", "leave", "Back"),
@@ -2852,6 +2857,9 @@ class HostLobbyScreen(Screen):
             kind, *rest = await self.server.events.get()
             if kind in ("join", "leave"):
                 self._render_players()
+                if kind == "join" and self._autostart and self.server.seats:
+                    self.action_start()
+                    return
 
     def _render_players(self) -> None:
         lines = [
@@ -3164,6 +3172,10 @@ class OnlineHostScreen(GameScreen):
     def _net_sync(self) -> None:
         events, self._share_buffer = self._share_buffer, []
         state = self._net_state()
+        # Monotonic sequence so a client can drop a re-delivered broadcast
+        # (relay dup / reconnect) instead of logging its events twice.
+        self._seq = getattr(self, "_seq", 0) + 1
+        state["seq"] = self._seq
         msg = {"t": "state", "state": state, "events": events}
         self.run_worker(self.server.broadcast(msg), exclusive=False)
         # Persist so 'Resume hosting' can reopen this match after a restart.
@@ -3385,6 +3397,13 @@ class OnlineClientScreen(GameScreen):
     def _apply_state(self, snap: dict, events: list[str]) -> None:
         if not snap:
             return
+        # Drop a re-delivered/stale broadcast so its events are not logged
+        # twice (the host stamps a monotonic seq on every state).
+        seq = snap.get("seq")
+        if seq is not None:
+            if seq <= getattr(self, "_last_seq", 0):
+                return
+            self._last_seq = seq
         prev_sig = (self.game_no, self.game.round, self.game.current_idx)
         prev_rolls = self.game.turn.rolls_used
         for player, pdata in zip(self.players, snap.get("players", [])):

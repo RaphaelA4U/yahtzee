@@ -62,6 +62,11 @@ def main() -> None:
         "--join", metavar="CODE",
         help="join an online game with this room code right away",
     )
+    parser.add_argument(
+        "--autostart", action="store_true",
+        help="with --host: begin the moment the first opponent connects "
+        "(no Enter needed); the lobby stays open until then",
+    )
     args = parser.parse_args()
 
     if args.profile:
@@ -152,7 +157,7 @@ def main() -> None:
         if not net.looks_like_code(code):
             print(f"Not a valid room code: {code} (6 letters/digits, e.g. ABC234)")
             raise SystemExit(2)
-        online = (role, code)
+        online = (role, code, bool(args.autostart))
         initial = None
 
     if args.name or args.color:
