@@ -2568,11 +2568,12 @@ class YahtzeeApp(App):
             name = players[idx].get("name", "Player") if idx < len(players) else "Player"
             server.seats.append(net.Seat(uuid=str(dev), name=str(name)))
         server._last_state = {k: v for k, v in snap.items() if k != "online_host"}
+        # Best-effort direct LAN port (relay drives the match either way);
+        # never block a resume on a port collision.
         try:
             await server.start()
-        except OSError as exc:
-            self.notify(f"Could not open a port: {exc}", severity="error")
-            return False
+        except OSError:
+            pass
         room = str(meta.get("room") or net.make_room_code())
         server.relay = net.RelaySlots(server, room)
         self.run_worker(server.relay.run(), exclusive=False)
@@ -2611,11 +2612,13 @@ class YahtzeeApp(App):
         server.started = True
         for nm in expect:
             server.seats.append(net.Seat(uuid=f"expect:{nm}", name=nm))
+        # Direct LAN port is a best-effort bonus; chat battles play over the
+        # relay (which drives handle_stream directly), so a bind failure -
+        # e.g. many battles sharing this games host - must NOT block the match.
         try:
             await server.start()
-        except OSError as exc:
-            self.notify(f"Could not open a port: {exc}", severity="error")
-            return
+        except OSError:
+            pass
         server.relay = net.RelaySlots(server, code)
         self.run_worker(server.relay.run(), exclusive=False)
         self.push_screen(OnlineHostScreen(config, server))

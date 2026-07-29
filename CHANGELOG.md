@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.2
+
+- Chat/relay battles no longer fail with "address in use" when several
+  run on one machine: the direct-LAN port bind is now best-effort
+  (the match plays over the relay regardless), so many battles run side
+  by side and a busy port never dumps you back to the menu.
+
 ## v1.13.1
 
 - Each player's scorecard now shows in that player's own color (column
