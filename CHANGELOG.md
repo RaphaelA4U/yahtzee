@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.7
+
+- Fix the match-over status bar telling every human "you won": it keyed
+  on "the winner is not a bot" instead of "the winner is me", so online
+  both players saw "you won". Only the actual winner sees "you" now.
+
 ## v1.13.6
 
 - The joiner's log no longer repeats a move under the next round: the

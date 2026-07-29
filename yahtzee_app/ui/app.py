@@ -1736,7 +1736,9 @@ class GameScreen(Screen):
         if self.game.finished:
             ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
             winner = ranked[0]
-            who = "you" if not winner.is_bot else winner.display_name
+            # Only the actual winner sees "you" - online, everyone runs this,
+            # so keying on "not a bot" wrongly told every human "you won".
+            who = "you" if winner is self.human else winner.display_name
             status.update(
                 f" [b]MATCH OVER[/b]  ·  {who} won with [b]{winner.match_total()}[/b] points"
             )
