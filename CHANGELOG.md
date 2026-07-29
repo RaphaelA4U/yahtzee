@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.5
+
+- --expect now accepts "Name:#color" so a pre-seated opponent shows their
+  real color immediately, instead of a fallback pool color while the host
+  waits for them to join.
+
 ## v1.13.4
 
 - A remote player's own color (their avatar color) is now applied on every

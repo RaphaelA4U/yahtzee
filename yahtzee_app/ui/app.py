@@ -2595,8 +2595,8 @@ class YahtzeeApp(App):
         if snap and snap_room == code and await self.resume_hosting():
             return
         if expect:
-            # 1-on-1 chat battles: pre-seat the opponents by name and start
-            # right away, no lobby. They bind to their seat whenever they join.
+            # 1-on-1 chat battles: pre-seat the opponents (name + color) and
+            # start right away, no lobby. They bind to their seat on join.
             await self._start_hosting_with_roster(code, expect)
             return
         self.push_screen(HostLobbyScreen(room=code, autostart=autostart))
@@ -2610,8 +2610,12 @@ class YahtzeeApp(App):
         )
         server = net.HostServer(net.player_name() or "Host")
         server.started = True
-        for nm in expect:
-            server.seats.append(net.Seat(uuid=f"expect:{nm}", name=nm))
+        for entry in expect:
+            nm, col = entry if isinstance(entry, tuple) else (entry, "")
+            seat = net.Seat(uuid=f"expect:{nm}", name=nm)
+            if col:
+                seat.color = col  # pre-seat color: no fallback 'pink' before they join
+            server.seats.append(seat)
         # Direct LAN port is a best-effort bonus; chat battles play over the
         # relay (which drives handle_stream directly), so a bind failure -
         # e.g. many battles sharing this games host - must NOT block the match.

@@ -162,7 +162,16 @@ def main() -> None:
         if not net.looks_like_code(code):
             print(f"Not a valid room code: {code} (6 letters/digits, e.g. ABC234)")
             raise SystemExit(2)
-        expect = [n.strip()[:16] for n in (args.expect or "").split(",") if n.strip()]
+        expect = []
+        for entry in (args.expect or "").split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if ":" in entry:
+                nm, _, col = entry.partition(":")
+                expect.append((nm.strip()[:16], col.strip()))
+            else:
+                expect.append((entry[:16], ""))
         online = (role, code, bool(args.autostart), expect)
         initial = None
 
