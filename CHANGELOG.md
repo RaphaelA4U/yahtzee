@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.10.2
+
+- Version-string fix: __init__.py and pyproject.toml had silently stayed
+  at 1.9.0 while the code advanced through 1.9.1-1.10.1 (the shipped
+  features were all present; only the reported version was wrong). Now
+  back in sync.
+
 ## v1.10.1
 
 - Hotfix on v1.10.0: an indentation slip made joining a lobby fail for
