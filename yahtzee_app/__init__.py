@@ -1,3 +1,3 @@
 """Yahtzee TUI."""
 
-__version__ = "1.13.3"
+__version__ = "1.13.4"

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.4
+
+- A remote player's own color (their avatar color) is now applied on every
+  state, not only on the join event, so a reserved-seat joiner no longer
+  briefly shows a fallback pool color (the "pink" seat).
+- Chat battles are a single game (was inheriting the saved games-count).
+
 ## v1.13.3
 
 - Fix "You joined as <the wrong player>" and wrong self-highlighting when

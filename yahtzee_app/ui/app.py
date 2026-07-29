@@ -2606,7 +2606,7 @@ class YahtzeeApp(App):
             difficulties=[],  # humans-only battle, no bots
             mode="normal",
             rules=str(load_settings().get("ruleset", "official")),
-            n_games=int(load_settings().get("n_games", 1)),
+            n_games=1,  # chat battles are a single quick game
         )
         server = net.HostServer(net.player_name() or "Host")
         server.started = True
@@ -3201,6 +3201,14 @@ class OnlineHostScreen(GameScreen):
         self._share_buffer.append(text)
 
     def _net_state(self) -> dict:
+        # Always reflect each remote player's own color (from their hello) in
+        # the serialized state. Doing it here - not only on the join/rebind
+        # event - is race-proof: a reserved seat starts on a pool color and
+        # its real color arrives with the hello, so we adopt it on every sync.
+        for idx, dev in self._uuid_by_player.items():
+            seat = self.server.seat_by_uuid(dev)
+            if seat and seat.color and self.players[idx].color != seat.color:
+                self.players[idx].color = seat.color
         snap = self._snapshot(finished=self._recorded)
         snap.pop("log", None)
         snap.pop("coach", None)
