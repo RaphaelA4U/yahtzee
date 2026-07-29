@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.11.0
+
+- A scripted host (chat battles) now hosts a humans-only match: no bots
+  are added regardless of your saved bot count.
+- Shorter hosting intro, and the b-key (let a bot fill in for an absent
+  player) is now a footer button instead of buried in the intro text.
+
 ## v1.10.2
 
 - Version-string fix: __init__.py and pyproject.toml had silently stayed

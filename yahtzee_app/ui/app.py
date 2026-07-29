@@ -2926,7 +2926,11 @@ class HostLobbyScreen(Screen):
         self._started = True
         self.server.started = True
         settings = load_settings()
-        n_bots = max(0, int(settings.get("n_bots", 2)) - len(self.server.seats))
+        # A scripted host (chat battles: fixed room code) is a humans-only
+        # match; never pad it with bots.
+        n_bots = 0 if self._fixed_room else max(
+            0, int(settings.get("n_bots", 2)) - len(self.server.seats)
+        )
         config = GameConfig(
             difficulties=[str(settings.get("difficulty", "medium"))] * n_bots,
             mode="normal",
@@ -3113,11 +3117,22 @@ class OnlineHostScreen(GameScreen):
         else:
             self.call_after_refresh(
                 self.log_write,
-                "[b]Online match![/b] You are hosting. The game waits for absent "
-                "players as long as you keep it open; press [b]b[/b] during their "
-                "turn to let a bot fill in until they return.",
+                "[b]You are hosting an online match![/b] The game waits for "
+                "players as long as you keep it open.",
             )
+        self.call_after_refresh(self._install_host_footer)
         self._net_sync()
+
+    def _install_host_footer(self) -> None:
+        # The b-key (bot stand-in for an absent player) belongs in the footer,
+        # not buried in the intro text.
+        try:
+            bar = self.query_one("#footer-keys", ActionBar)
+        except NoMatches:
+            return
+        segs = list(FOOTER_PLAYING)
+        segs.insert(6, ("b bot fills in", None))
+        bar.set_segments(segs)
 
     def checkpoint(self) -> None:
         pass  # persisted via _net_sync; the offline save slot stays untouched
