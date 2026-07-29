@@ -240,3 +240,46 @@ async def test_cli_join_flag_prefills_lobby():
                 break
         assert isinstance(app.screen, JoinLobbyScreen)
         assert app.screen.query_one("#join-address", Input).value == "XYZ234"
+
+
+@pytest.mark.asyncio
+async def test_reserved_seat_binds_by_name_after_start():
+    """A pre-seated (expect:Name) opponent can join a started match by name
+    and never gets 'already started'; their uuid binds to the reserved seat."""
+    server = net.HostServer("Hosty")
+    server.started = True
+    server.seats.append(net.Seat(uuid="expect:Matthijs", name="Matthijs"))
+    port = await server.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        await net.send_msg(writer, {
+            "t": "hello", "v": net.PROTOCOL_VERSION,
+            "uuid": "real-device-9", "name": "Matthijs", "color": "#e67e22", "stats": {},
+        })
+        welcome = await net.read_msg(reader)
+        assert welcome["t"] == "welcome" and welcome["name"] == "Matthijs"
+        seat = server.seat_by_uuid("real-device-9")
+        assert seat is not None and seat.name == "Matthijs"
+        assert seat.color == "#e67e22"
+        assert server.seat_by_uuid("expect:Matthijs") is None  # rebound
+        writer.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_player_still_refused_after_start():
+    server = net.HostServer("Hosty")
+    server.started = True
+    port = await server.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        await net.send_msg(writer, {
+            "t": "hello", "v": net.PROTOCOL_VERSION,
+            "uuid": "stranger", "name": "Stranger", "stats": {},
+        })
+        msg = await net.read_msg(reader)
+        assert msg["t"] == "error" and msg["reason"] == "started"
+        writer.close()
+    finally:
+        await server.stop()

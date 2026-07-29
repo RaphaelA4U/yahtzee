@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.13.0
+
+- --expect NAMES (with --host): pre-seat the named opponents and start
+  the match at once, no lobby. They bind to their reserved seat by name
+  whenever they join, so an expected player is never told "already
+  started"; the game waits for them until then.
+- With an explicit --color the WHOLE accent follows your color (dice
+  cursor, YOUR TURN, borders), not just your name; normal play stays
+  purple.
+- Online log no longer repeats a move under the next round (exact-repeat
+  event lines are dropped on the receiving side).
+
 ## v1.12.0
 
 - --autostart (with --host): the match begins the moment the first

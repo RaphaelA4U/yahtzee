@@ -2481,7 +2481,7 @@ class YahtzeeApp(App):
     #left-column { width: 1fr; min-width: 68; padding: 0 1; }
     #dice-area { height: 10; margin-top: 1; }
     DiceRow { width: 62; height: 10; layout: horizontal; border: blank; }
-    DiceRow.attention { border: ascii #875fff; }
+    DiceRow.attention { border: ascii $accent; }
     .die { width: 12; height: 7; background: ansi_default; }
     #roll-column { width: 26; padding-top: 1; margin-left: 2; }
     #roll-action { height: 1; }
@@ -2496,7 +2496,7 @@ class YahtzeeApp(App):
     .cards-row { width: auto; height: auto; }
     #cards-more { height: 1; color: ansi_bright_black; }
     PlayerCard { width: auto; height: auto; margin-right: 1; border: blank; }
-    PlayerCard.attention { border: ascii #875fff; }
+    PlayerCard.attention { border: ascii $accent; }
     #footer-keys { height: 1; color: ansi_bright_black; }
 
     /* Online lobbies */
@@ -2528,6 +2528,15 @@ class YahtzeeApp(App):
         resume: bool = False,
         online: tuple[str, str] | None = None,
     ) -> None:
+        # Everyone plays in their own color: an explicit --color (chat battles)
+        # themes the whole accent (dice cursor, YOUR TURN, borders, ...), not
+        # just the name. Normal play keeps the Claude-style purple. Set before
+        # super().__init__, which reads get_css_variables().
+        global ACCENT
+        own = net.player_color()
+        if own:
+            ACCENT = own
+        self._accent = ACCENT
         super().__init__(ansi_color=True)
         self.no_update = no_update
         self.initial = initial
@@ -2572,8 +2581,9 @@ class YahtzeeApp(App):
 
     async def _online_entry(self) -> None:
         """CLI-driven online start: --host CODE / --join CODE."""
-        role, code, *rest = self.online or ("", "", False)
-        autostart = bool(rest[0]) if rest else False
+        role, code, *rest = self.online or ("", "", False, [])
+        autostart = bool(rest[0]) if len(rest) > 0 else False
+        expect = list(rest[1]) if len(rest) > 1 and rest[1] else []
         if role == "join":
             self.push_screen(JoinLobbyScreen(prefill=code, auto=True))
             return
@@ -2583,7 +2593,38 @@ class YahtzeeApp(App):
         snap_room = ((snap or {}).get("online_host") or {}).get("room")
         if snap and snap_room == code and await self.resume_hosting():
             return
+        if expect:
+            # 1-on-1 chat battles: pre-seat the opponents by name and start
+            # right away, no lobby. They bind to their seat whenever they join.
+            await self._start_hosting_with_roster(code, expect)
+            return
         self.push_screen(HostLobbyScreen(room=code, autostart=autostart))
+
+    async def _start_hosting_with_roster(self, code: str, expect: list[str]) -> None:
+        config = GameConfig(
+            difficulties=[],  # humans-only battle, no bots
+            mode="normal",
+            rules=str(load_settings().get("ruleset", "official")),
+            n_games=int(load_settings().get("n_games", 1)),
+        )
+        server = net.HostServer(net.player_name() or "Host")
+        server.started = True
+        for nm in expect:
+            server.seats.append(net.Seat(uuid=f"expect:{nm}", name=nm))
+        try:
+            await server.start()
+        except OSError as exc:
+            self.notify(f"Could not open a port: {exc}", severity="error")
+            return
+        server.relay = net.RelaySlots(server, code)
+        self.run_worker(server.relay.run(), exclusive=False)
+        self.push_screen(OnlineHostScreen(config, server))
+
+    def get_css_variables(self) -> dict[str, str]:
+        # Expose $accent so the static TCSS borders follow the player color.
+        variables = super().get_css_variables()
+        variables["accent"] = self._accent
+        return variables
 
     def on_mount(self) -> None:
         self.push_screen(MenuScreen())
@@ -3240,11 +3281,27 @@ class OnlineHostScreen(GameScreen):
         while True:
             event = await self.server.events.get()
             kind = event[0]
-            if kind == "join":
+            if kind == "rebind":
+                # A reserved seat (expect:Name) got its real device id when the
+                # player finally joined: repoint the player→uuid map and adopt
+                # the color from their hello.
+                old_uuid, new_uuid = event[1], event[2]
+                for idx, dev in list(self._uuid_by_player.items()):
+                    if dev == old_uuid:
+                        self._uuid_by_player[idx] = new_uuid
+                        seat = self.server.seat_by_uuid(new_uuid)
+                        if seat and seat.color:
+                            self.players[idx].color = seat.color
+                self.refresh_all()
+            elif kind == "join":
                 seat = self.server.seat_by_uuid(event[1])
                 if seat:
                     self._takeover.discard(seat.uuid)
-                    self.log_write(f"[green]{seat.name} is back online.[/green]", share=True)
+                    # Adopt the joiner's own color (avatar color) if they sent one.
+                    for idx, dev in self._uuid_by_player.items():
+                        if dev == seat.uuid and seat.color:
+                            self.players[idx].color = seat.color
+                    self.log_write(f"[green]{seat.name} joined.[/green]", share=True)
                     self._net_sync()
             elif kind == "leave":
                 seat = self.server.seat_by_uuid(event[1])
@@ -3445,7 +3502,17 @@ class OnlineClientScreen(GameScreen):
             self._pending_header = (
                 f"[dim]── {game_part}Round {game.round}/13 " + "─" * 18 + "[/dim]"
             )
+        # Score/roll event lines are unique within a game (a category is
+        # filled once), so drop any exact repeat: kills a line that a stray
+        # duplicate broadcast would otherwise log under the next round too.
+        seen = getattr(self, "_seen_events", None)
+        if seen is None or getattr(self, "_seen_game", None) != self.game_no:
+            seen = self._seen_events = set()
+            self._seen_game = self.game_no
         for line in events:
+            if line in seen:
+                continue
+            seen.add(line)
             self.log_write(self._localize(line))
         # Record my own finished games locally (per-game stats)
         my_history = len(self.human.history)

@@ -329,22 +329,37 @@ class HostServer:
         name = str(hello.get("name", "Player"))[:16] or "Player"
         seat = self.seat_by_uuid(dev)
         if seat is None:
-            if self.started or len(self.seats) >= self.max_remote:
+            # A reserved seat (chat battles pre-seat the expected opponents by
+            # name so the host can start at once): bind this device to it,
+            # even after the match started. This is why an expected player is
+            # never told "already started".
+            reserved = next(
+                (s for s in self.seats
+                 if s.uuid.startswith("expect:") and s.name == name),
+                None,
+            )
+            if reserved is not None:
+                old_uuid = reserved.uuid
+                reserved.uuid = dev
+                seat = reserved
+                await self.events.put(("rebind", old_uuid, dev))
+            elif self.started or len(self.seats) >= self.max_remote:
                 await send_msg(
                     writer,
                     {"t": "error", "reason": "started" if self.started else "full"},
                 )
                 writer.close()
                 return
-            # Keep names unique at the table (host included), so two
-            # players called Raphael stay distinguishable.
-            taken = {self.host_name} | {s.name for s in self.seats}
-            base, n = name, 2
-            while name in taken:
-                name = f"{base} {n}"
-                n += 1
-            seat = Seat(uuid=dev, name=name, stats=dict(hello.get("stats") or {}))
-            self.seats.append(seat)
+            else:
+                # Keep names unique at the table (host included), so two
+                # players called Raphael stay distinguishable.
+                taken = {self.host_name} | {s.name for s in self.seats}
+                base, n = name, 2
+                while name in taken:
+                    name = f"{base} {n}"
+                    n += 1
+                seat = Seat(uuid=dev, name=name, stats=dict(hello.get("stats") or {}))
+                self.seats.append(seat)
         color = str(hello.get("color") or "")[:7]
         if color:
             seat.color = color
