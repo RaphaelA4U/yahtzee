@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.3
+
+- Fix "You joined as <the wrong player>" and wrong self-highlighting when
+  joining a reserved-seat (chat battle) match: the first state can still
+  carry the seat's placeholder id, so the client now identifies its own
+  seat by name until its real id is bound, and re-resolves it on every
+  state.
+
 ## v1.13.2
 
 - Chat/relay battles no longer fail with "address in use" when several

@@ -283,3 +283,43 @@ async def test_unexpected_player_still_refused_after_start():
         writer.close()
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_client_local_idx_by_name_when_uuid_placeholder():
+    """Joining a reserved seat: the first state may still carry the
+    placeholder uuid, so the client must identify itself by name, not
+    default to the host (index 0)."""
+    from yahtzee_app.ui.app import OnlineClientScreen, YahtzeeApp
+
+    me = net.device_id()
+    net.save_player_name("Raphael")
+    state = {
+        "version": "x",
+        "config": {"difficulties": [], "mode": "normal", "rules": "official"},
+        "n_games": 1, "game_no": 1, "finished": False, "round": 1, "current_idx": 0,
+        "turn": {"dice": [1, 2, 3, 4, 5], "held": [False] * 5, "rolls_used": 0},
+        "players": [
+            {"name": "Matthijs", "bot": False, "difficulty": None, "color": "#e67e22",
+             "boxes": [None] * 13, "ybonus": 0, "history": []},
+            {"name": "Raphael", "bot": False, "difficulty": None, "color": "#8e44ad",
+             "boxes": [None] * 13, "ybonus": 0, "history": []},
+        ],
+        # Host still advertises the reserved placeholder for the joiner.
+        "uuids": ["host", "expect:Raphael"],
+    }
+    client = net.GameClient("127.0.0.1:59999", "Raphael")
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(OnlineClientScreen(client, state))
+        await pilot.pause(0.2)
+        screen = app.screen
+        assert screen.local_idx == 1  # matched by name, not defaulted to host
+        assert screen.human.name == "Raphael"
+        # Once the host rebinds our real uuid, we stay correct.
+        s2 = dict(state, uuids=["host", me], seq=2)
+        await client.events.put(("msg", {"t": "state", "state": s2, "events": []}))
+        await pilot.pause(0.3)
+        assert screen.local_idx == 1
+        client.close()

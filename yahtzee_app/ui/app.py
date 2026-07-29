@@ -3377,9 +3377,7 @@ class OnlineClientScreen(GameScreen):
         state = dict(state, log=[])
         super().__init__(config, snapshot=state)
         self.client = client
-        uuids = state.get("uuids", [])
-        me = net.device_id()
-        self.local_idx = uuids.index(me) if me in uuids else 0
+        self.local_idx = self._resolve_local_idx(state.get("uuids", []))
         self._view_only = False
         self._prev_history = len(self.players[self.local_idx].history)
         self._match_done = False
@@ -3413,6 +3411,21 @@ class OnlineClientScreen(GameScreen):
 
     def checkpoint(self) -> None:
         pass
+
+    def _resolve_local_idx(self, uuids: list) -> int:
+        """Which seat is me. Prefer my device uuid; fall back to my own name
+        for the window between joining a reserved seat (expect:Name) and the
+        host rebinding my real uuid - otherwise I'd wrongly think I am the
+        host (index 0) and show 'joined as <host>'."""
+        me = net.device_id()
+        if me in uuids:
+            return uuids.index(me)
+        myname = net.player_name()
+        if myname:
+            for i, p in enumerate(self.players):
+                if p.name == myname:
+                    return i
+        return 0
 
     def start_turn(self) -> None:
         # The host drives the game; the client only mirrors it.
@@ -3466,6 +3479,10 @@ class OnlineClientScreen(GameScreen):
             self._last_seq = seq
         prev_sig = (self.game_no, self.game.round, self.game.current_idx)
         prev_rolls = self.game.turn.rolls_used
+        # Re-resolve which seat is me: a reserved seat's real uuid only lands
+        # after the host rebinds it, so the first state may not carry it yet.
+        if "uuids" in snap:
+            self.local_idx = self._resolve_local_idx(snap.get("uuids") or [])
         for player, pdata in zip(self.players, snap.get("players", [])):
             player.card.boxes = [
                 b if b is None else int(b) for b in pdata.get("boxes", [None] * 13)
