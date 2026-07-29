@@ -3535,16 +3535,20 @@ class OnlineClientScreen(GameScreen):
                 f"[dim]── {game_part}Round {game.round}/13 " + "─" * 18 + "[/dim]"
             )
         # Score/roll event lines are unique within a game (a category is
-        # filled once), so drop any exact repeat: kills a line that a stray
-        # duplicate broadcast would otherwise log under the next round too.
+        # filled once), so drop any repeat: kills a line that a stray duplicate
+        # broadcast would otherwise log under the next round too. Compare on the
+        # markup-stripped text so a color change between broadcasts (a player's
+        # color settling after they join) can't sneak the same line through.
         seen = getattr(self, "_seen_events", None)
         if seen is None or getattr(self, "_seen_game", None) != self.game_no:
             seen = self._seen_events = set()
             self._seen_game = self.game_no
+        import re as _re_dedup
         for line in events:
-            if line in seen:
+            key = _re_dedup.sub(r"\[/?[^\]]*\]", "", line).strip()
+            if key in seen:
                 continue
-            seen.add(line)
+            seen.add(key)
             self.log_write(self._localize(line))
         # Record my own finished games locally (per-game stats)
         my_history = len(self.human.history)

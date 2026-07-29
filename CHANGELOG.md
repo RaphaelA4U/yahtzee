@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.6
+
+- The joiner's log no longer repeats a move under the next round: the
+  duplicate-line guard now compares the plain text, so a player's color
+  settling after they join can't slip the same line through.
+
 ## v1.13.5
 
 - --expect now accepts "Name:#color" so a pre-seated opponent shows their

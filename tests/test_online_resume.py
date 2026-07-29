@@ -323,3 +323,33 @@ async def test_client_local_idx_by_name_when_uuid_placeholder():
         await pilot.pause(0.3)
         assert screen.local_idx == 1
         client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_dedup_survives_color_change():
+    """A move logged once must not reappear even if the player's color markup
+    changes between broadcasts (color settling after a reserved-seat join)."""
+    from yahtzee_app.ui.app import OnlineClientScreen, YahtzeeApp
+
+    me = net.device_id()
+    net.save_player_name("Me")
+    base = _client_state(me)
+    client = net.GameClient("127.0.0.1:59999", "Me")
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(OnlineClientScreen(client, base))
+        await pilot.pause(0.2)
+        screen = app.screen
+
+        line_pool = "[#ff6e9c]Me          [/#ff6e9c] [dim](1 2 3 4 5)[/dim] Large Straight → 40"
+        line_real = "[#e67e22]Me          [/#e67e22] [dim](1 2 3 4 5)[/dim] Large Straight → 40"
+        s1 = dict(base, seq=2, round=1)
+        await client.events.put(("msg", {"t": "state", "state": s1, "events": [line_pool]}))
+        await pilot.pause(0.2)
+        s2 = dict(base, seq=3, round=2)
+        await client.events.put(("msg", {"t": "state", "state": s2, "events": [line_real]}))
+        await pilot.pause(0.2)
+        logged = [ln for ln in screen._log_history if "Large Straight" in ln]
+        assert len(logged) == 1, f"expected one, got {logged}"
+        client.close()
