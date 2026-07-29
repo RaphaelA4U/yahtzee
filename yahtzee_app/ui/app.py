@@ -498,7 +498,7 @@ class PlayerCard(Widget):
         if self.n_games > 1:
             header = []
             for i in range(self.n_games):
-                style = f"bold {ACCENT}" if (i == self.active_col and not self.match_over) else "dim"
+                style = f"bold {color}" if (i == self.active_col and not self.match_over) else "dim"
                 header.append(Text(f"G{i + 1}", style=style))
             out.append_text(self._row(Text(""), header))
             out.append_text(self._sep())
@@ -533,12 +533,12 @@ class PlayerCard(Widget):
             interactive_now = self.interactive and self.preview and not self.match_over
             style = ""
             if show_cursor and cat == self.cursor_cat:
-                style = f"bold {ACCENT}"
+                style = f"bold {color}"
             elif cat == self.hovered_cat and interactive_now:
                 style = "bold"
             marker = ">" if (show_cursor and cat == self.cursor_cat) else " "
             t = Text(no_wrap=True)
-            t.append(marker, style=f"bold {ACCENT}" if marker == ">" else "")
+            t.append(marker, style=f"bold {color}" if marker == ">" else "")
             t.append(self._labels()[cat], style=style)
             return t
 
@@ -596,7 +596,7 @@ class PlayerCard(Widget):
             self._row(
                 Text(" TOTAL" if not self.compact else "Tot", style="bold"),
                 [
-                    Text(str(c.total()) if c else "", style=f"bold {ACCENT}")
+                    Text(str(c.total()) if c else "", style=f"bold {color}")
                     for c in cols
                 ],
             )

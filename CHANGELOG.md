@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.13.1
+
+- Each player's scorecard now shows in that player's own color (column
+  headers, cursor, totals), so an opponent's card no longer borrows your
+  accent color; your own dice/turn UI stays in your color.
+
 ## v1.13.0
 
 - --expect NAMES (with --host): pre-seat the named opponents and start
