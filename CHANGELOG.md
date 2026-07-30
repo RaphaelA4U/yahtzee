@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.8
+
+- No more spurious "Round 14/13" header on the joined side: after the
+  final score the host briefly broadcasts round 14 before the match-over
+  state, and the client turned that into a header. A match is capped at
+  13 rounds now.
+
 ## v1.13.7
 
 - Fix the match-over status bar telling every human "you won": it keyed

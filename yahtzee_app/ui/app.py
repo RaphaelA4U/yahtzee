@@ -3528,9 +3528,12 @@ class OnlineClientScreen(GameScreen):
             and not self._rolling
         ):
             self.run_worker(self._animate_net_roll(), exclusive=False)
-        # Round headers, locally generated like offline
+        # Round headers, locally generated like offline. Guard against a
+        # spurious round-14 header: after the last score the host briefly
+        # broadcasts round=14 (advance) with finished not yet set, before the
+        # match-over state lands. A match is always <= 13 rounds.
         key = (self.game_no, game.round)
-        if not game.finished and self._last_logged != key:
+        if not game.finished and game.round <= N_CATEGORIES and self._last_logged != key:
             self._last_logged = key
             game_part = f"Game {self.game_no} · " if self.n_games > 1 else ""
             self._pending_header = (
