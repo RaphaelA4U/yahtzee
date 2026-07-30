@@ -250,6 +250,10 @@ async def test_client_pick_sends_only_no_local_echo():
         assert scored == []                                 # never scored locally
         # and no 'Me ... -> ' move line leaked into the local log
         assert not any("Me" in ln and "→" in ln for ln in screen._log_history)
+        # but we DID grade our own decision locally, so we get a per-player
+        # review (skipped only in lite mode without the solver).
+        if screen.oracle is not None:
+            assert len(screen.coach.decisions) == 1
         client.close()
 
 

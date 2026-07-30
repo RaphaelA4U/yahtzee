@@ -1303,14 +1303,6 @@ FOOTER_GAME_OVER = [
     ("ctrl+q quit", "quit"),
 ]
 
-# A joined player never grades locally (the host owns the dice), so there is no
-# move-by-move review to show - drop that key on the client's game-over footer.
-FOOTER_GAME_OVER_CLIENT = [
-    ("n new match", "new"),
-    ("m menu", "menu"),
-    ("ctrl+q quit", "quit"),
-]
-
 
 class ActionBar(Static):
     """Footer key hints; the ones bound to an action are clickable."""
@@ -3613,7 +3605,11 @@ class OnlineClientScreen(GameScreen):
             settings = load_settings()
             if settings.pop("last_online", None) is not None:
                 save_settings(settings)
-            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER_CLIENT)
+            # We graded our own moves, so we have our own accuracy + review.
+            self._final_accuracy = (
+                self.coach.accuracy() if self.coach.decisions else None
+            )
+            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
             # Render our own framed match-over panel (the host no longer shares
             # those lines): full frame, correct winner from our perspective.
             self._render_match_over()
@@ -3682,6 +3678,20 @@ class OnlineClientScreen(GameScreen):
         except ValueError as exc:
             self.log_write(f"[dim]{exc}[/dim]")
             return
+        # Grade our OWN decision locally, so a joined player gets a per-player
+        # move-by-move review and final accuracy exactly like the host does for
+        # theirs. record_score only reads the card (no mutation), so it is safe
+        # before the host's authoritative broadcast applies the move. Needs the
+        # solver; silently skipped in lite mode (no numpy).
+        if self.oracle is not None:
+            try:
+                record_score(
+                    self.coach, self.oracle, self.human.card, turn.counts(),
+                    category, self.game.round, rolls_left=turn.rolls_left,
+                    game_no=self.game_no,
+                )
+            except Exception:  # noqa: BLE001 - grading must never block a move
+                pass
         self.run_worker(
             self.client.send_action({"kind": "score", "category": category}),
             exclusive=False,
@@ -3716,16 +3726,18 @@ class OnlineClientScreen(GameScreen):
         self.log_write("[dim]Only the host can start a new match.[/dim]")
 
     def action_review(self) -> None:
-        # A joined player never grades locally (the host runs the dice), so
-        # there are no decisions to analyse. Be honest rather than showing an
-        # empty "0 decisions" review page.
-        self.app.push_screen(TextPage(
-            "Review",
-            "Move-by-move review needs the local solver, which only runs on "
-            "the side hosting the match. When you JOIN a battle the host drives "
-            "the dice, so there is no per-decision analysis on your screen.\n\n"
-            "Your final score is shown in the match-over panel above.",
-        ))
+        # We grade our own decisions locally (see _category_picked_net), so a
+        # joined player gets their own per-player review. Only in lite mode (no
+        # solver) is there nothing to show.
+        if self.coach.decisions:
+            title = "Match review" if self.game.finished else "Review so far"
+            self.app.push_screen(TextPage("Review", review_text(self.coach, title)))
+        else:
+            self.app.push_screen(TextPage(
+                "Review",
+                "Move-by-move review needs the solver (numpy), which is not "
+                "available on this device.",
+            ))
 
     def action_to_menu(self) -> None:
         self.client.close()

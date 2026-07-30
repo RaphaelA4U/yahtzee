@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.13.10
+
+- Joined players now get their OWN move-by-move review and final accuracy.
+  The client grades its own decisions locally (the host stays authoritative
+  for the dice), so pressing v after a battle shows a real per-player review
+  instead of a "not available" note. Lite mode (no solver) still skips it.
+
 ## v1.13.9
 
 - Joined players no longer see their own moves logged twice. Textual fires
