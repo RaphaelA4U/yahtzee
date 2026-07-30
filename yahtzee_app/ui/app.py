@@ -46,7 +46,6 @@ from ..bots import (
 from ..coach import CoachTracker, Decision, record_keep, record_score, verdict_line
 from ..config import (
     SPEED_DELAYS,
-    clear_online_snapshot,
     clear_saved_game,
     load_game_snapshot,
     load_online_snapshot,
@@ -1176,7 +1175,11 @@ class MenuScreen(Screen):
         item = menu.item("continue")
         item.label = "View last game" if (snapshot or {}).get("finished") else "Continue last game"
         menu.set_visible("continue", snapshot is not None)
-        menu.set_visible("resume-host", load_online_snapshot() is not None)
+        _online_snap = load_online_snapshot()
+        menu.set_visible(
+            "resume-host",
+            _online_snap is not None and not _online_snap.get("finished"),
+        )
         menu.set_visible("rejoin", bool(load_settings().get("last_online")))
 
     async def _resume_host(self) -> None:
@@ -1300,6 +1303,14 @@ FOOTER_GAME_OVER = [
     ("ctrl+q quit", "quit"),
 ]
 
+# A joined player never grades locally (the host owns the dice), so there is no
+# move-by-move review to show - drop that key on the client's game-over footer.
+FOOTER_GAME_OVER_CLIENT = [
+    ("n new match", "new"),
+    ("m menu", "menu"),
+    ("ctrl+q quit", "quit"),
+]
+
 
 class ActionBar(Static):
     """Footer key hints; the ones bound to an action are clickable."""
@@ -1415,6 +1426,10 @@ class GameScreen(Screen):
         self._last_hint_key = None
         self._assists: set[str] = set()
         self._pending_header: str | None = None
+        # Setup notices (hosting/joined) logged before the first move are a
+        # preamble that belongs ABOVE the Round 1 header, so they must not flush
+        # a pending header. Flips to True once real play (a move) is logged.
+        self._play_started = False
         self._log_history: list[str] = []
         self._restored_log: list[str] = snapshot.get("log", []) if snapshot else []
 
@@ -1614,7 +1629,7 @@ class GameScreen(Screen):
     def _net_sync(self) -> None:
         """Hook: online host broadcasts the game state after changes."""
 
-    def log_write(self, text: str, share: bool = False) -> None:
+    def log_write(self, text: str, share: bool = False, preamble: bool = False) -> None:
         if not self.is_mounted:
             return
         if share:
@@ -1622,8 +1637,10 @@ class GameScreen(Screen):
         try:
             log = self.query_one("#log", RichLog)
             # A round header only appears together with the round's first
-            # content line, never dangling on its own.
-            if self._pending_header and text:
+            # content line, never dangling on its own. Preamble lines (the
+            # hosting/joined setup notices) sit above the header, so they never
+            # trigger the flush - the first real move does.
+            if self._pending_header and text and not preamble:
                 for line in ("", self._pending_header):
                     log.write(line)
                     self._log_history.append(line)
@@ -1943,6 +1960,7 @@ class GameScreen(Screen):
         joker = " [dim](joker)[/dim]" if option.is_joker else ""
         dice_str = " ".join(str(d) for d in sorted(turn.dice))
         pts = f"[b]{option.points}[/b]" if option.points else "[dim]x[/dim]"
+        self._play_started = True  # real play begins; setup preamble is closed
         self.log_write(
             f"[{name_style}]{name:<12}[/{name_style}] [dim]({dice_str})[/dim] "
             f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}",
@@ -2026,6 +2044,17 @@ class GameScreen(Screen):
             self._final_accuracy = (
                 self.coach.accuracy() if self.coach.decisions else None
             )
+        self._render_match_over()
+        self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
+        self.refresh_all()
+        self._net_sync()
+
+    def _render_match_over(self) -> None:
+        """The framed match-over panel, drawn from THIS screen's own
+        perspective. Deliberately shares nothing over the network: the online
+        client renders its own copy (triggered by the finished state) so both
+        sides get the full frame, the right winner (You win! vs X wins!) and
+        their own accuracy - never the host's."""
         ranked = sorted(self.players, key=lambda p: p.match_total(), reverse=True)
         winner = ranked[0]
         bar = "=" * 44
@@ -2033,22 +2062,15 @@ class GameScreen(Screen):
         self.log_write(f"[dim]{bar}[/dim]")
         if winner is self.human:
             self.log_write("[b green]  MATCH OVER  ·  You win![/b green]")
-            self._net_share(
-                f"[b green]  MATCH OVER  ·  {winner.display_name} wins![/b green]"
-            )
         elif winner.is_bot:
-            self.log_write(f"[b]  MATCH OVER  ·  {winner.display_name} wins[/b]", share=True)
+            self.log_write(f"[b]  MATCH OVER  ·  {winner.display_name} wins[/b]")
         else:
-            self.log_write(
-                f"[b green]  MATCH OVER  ·  {winner.display_name} wins![/b green]",
-                share=True,
-            )
+            self.log_write(f"[b green]  MATCH OVER  ·  {winner.display_name} wins![/b green]")
         for i, p in enumerate(ranked, start=1):
             diff = f" ({p.difficulty})" if p.difficulty else ""
             self.log_write(
                 f"  {i}. [{p.color}]{p.display_name}[/{p.color}]{diff}: "
-                f"[b]{p.match_total()}[/b] points",
-                share=True,
+                f"[b]{p.match_total()}[/b] points"
             )
         if self._final_accuracy is not None:
             self.log_write(
@@ -2057,9 +2079,6 @@ class GameScreen(Screen):
             )
         self.log_write(f"[dim]{bar}[/dim]")
         self.log_write("")
-        self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
-        self.refresh_all()
-        self._net_sync()
 
     # -- human actions -----------------------------------------------------
 
@@ -2125,6 +2144,15 @@ class GameScreen(Screen):
 
     @on(PlayerCard.CategoryPicked)
     def _category_picked(self, event: PlayerCard.CategoryPicked) -> None:
+        # Single decorated entry point. Textual collects @on handlers from every
+        # class in the MRO and calls each function object directly, so a subclass
+        # that ALSO decorated a same-named _category_picked would fire BOTH its
+        # override and this base method (same name does not override for @on).
+        # Dispatch to an overridable, UNDECORATED helper instead: subclasses
+        # (the online client) override the helper, so exactly one runs.
+        self._do_category_picked(event)
+
+    def _do_category_picked(self, event: PlayerCard.CategoryPicked) -> None:
         if not self.human_may_act():
             return
         turn = self.game.turn
@@ -3171,12 +3199,14 @@ class OnlineHostScreen(GameScreen):
                 f"[b]Match resumed![/b] Players can rejoin{code_part}; the game "
                 "waits for them. Press [b]b[/b] during an absent player's turn "
                 "to let a bot fill in.",
+                preamble=True,
             )
         else:
             self.call_after_refresh(
                 self.log_write,
                 "[b]You are hosting an online match![/b] The game waits for "
                 "players as long as you keep it open.",
+                preamble=True,
             )
         self.call_after_refresh(self._install_host_footer)
         self._net_sync()
@@ -3225,6 +3255,12 @@ class OnlineHostScreen(GameScreen):
             else:
                 uuids.append(self._uuid_by_player.get(idx, ""))
         snap["uuids"] = uuids
+        # Running totals + names, so an outbound-only watcher (beheer's battle
+        # card) can show live scores and the final standings without ever
+        # reading the dice or calling back in. match_total() already folds in
+        # the current (live) card, so this is the live score during play too.
+        snap["totals"] = [p.match_total() for p in self.players]
+        snap["names"] = [p.display_name for p in self.players]
         return snap
 
     def _net_sync(self) -> None:
@@ -3236,19 +3272,20 @@ class OnlineHostScreen(GameScreen):
         state["seq"] = self._seq
         msg = {"t": "state", "state": state, "events": events}
         self.run_worker(self.server.broadcast(msg), exclusive=False)
-        # Persist so 'Resume hosting' can reopen this match after a restart.
-        if state.get("finished"):
-            clear_online_snapshot()
-        else:
-            save_online_snapshot(
-                dict(
-                    state,
-                    online_host={
-                        "room": getattr(getattr(self.server, "relay", None), "room", None),
-                        "host_name": self.server.host_name,
-                    },
-                )
+        # Persist so 'Resume hosting' can reopen this match after a restart, AND
+        # so the outbound-only battle-status poll can read the final standings.
+        # A finished match is kept too (marked finished in the state): the resume
+        # menu skips finished snapshots, and beheer's card reads the end result
+        # from it instead of freezing on the last mid-game snapshot.
+        save_online_snapshot(
+            dict(
+                state,
+                online_host={
+                    "room": getattr(getattr(self.server, "relay", None), "room", None),
+                    "host_name": self.server.host_name,
+                },
             )
+        )
 
     # -- remote turns ------------------------------------------------------
 
@@ -3318,7 +3355,11 @@ class OnlineHostScreen(GameScreen):
                     for idx, dev in self._uuid_by_player.items():
                         if dev == seat.uuid and seat.color:
                             self.players[idx].color = seat.color
-                    self.log_write(f"[green]{seat.name} joined.[/green]", share=True)
+                    self.log_write(
+                        f"[green]{seat.name} joined.[/green]",
+                        share=True,
+                        preamble=not self._play_started,
+                    )
                     self._net_sync()
             elif kind == "leave":
                 seat = self.server.seat_by_uuid(event[1])
@@ -3420,6 +3461,7 @@ class OnlineClientScreen(GameScreen):
             self.log_write,
             "[b]Online match![/b] You joined as "
             f"[{self.human.color}]{self.human.display_name}[/{self.human.color}].",
+            preamble=True,
         )
         self.refresh_all()
 
@@ -3554,7 +3596,13 @@ class OnlineClientScreen(GameScreen):
             if key in seen:
                 continue
             seen.add(key)
-            self.log_write(self._localize(line))
+            # Setup notices (a "... joined." line) before the first move are a
+            # preamble that sits above the Round 1 header; a real move line
+            # (carrying the score arrow) opens play and flushes the header.
+            is_move = "→" in line
+            if is_move:
+                self._play_started = True
+            self.log_write(self._localize(line), preamble=not self._play_started and not is_move)
         # Record my own finished games locally (per-game stats)
         my_history = len(self.human.history)
         if my_history > self._prev_history:
@@ -3565,7 +3613,10 @@ class OnlineClientScreen(GameScreen):
             settings = load_settings()
             if settings.pop("last_online", None) is not None:
                 save_settings(settings)
-            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER)
+            self.query_one("#footer-keys", ActionBar).set_segments(FOOTER_GAME_OVER_CLIENT)
+            # Render our own framed match-over panel (the host no longer shares
+            # those lines): full frame, correct winner from our perspective.
+            self._render_match_over()
         self.refresh_all()
 
     def _record_finished_game(self, card: Scorecard) -> None:
@@ -3636,8 +3687,13 @@ class OnlineClientScreen(GameScreen):
             exclusive=False,
         )
 
-    @on(PlayerCard.CategoryPicked)
-    def _category_picked(self, event: PlayerCard.CategoryPicked) -> None:
+    def _do_category_picked(self, event: PlayerCard.CategoryPicked) -> None:
+        # Override of the base helper (deliberately NOT @on-decorated: the base's
+        # single decorated _category_picked dispatches here). The client never
+        # scores locally - it sends the action and renders the host's
+        # authoritative broadcast - so a move is logged exactly once, via
+        # _apply_state. Decorating this would make Textual fire the base handler
+        # too, scoring locally as a phantom echo on top of the broadcast.
         if not self.human_may_act():
             return
         if self.game.turn.rolls_used == 0:
@@ -3658,6 +3714,18 @@ class OnlineClientScreen(GameScreen):
 
     def action_new_game(self) -> None:
         self.log_write("[dim]Only the host can start a new match.[/dim]")
+
+    def action_review(self) -> None:
+        # A joined player never grades locally (the host runs the dice), so
+        # there are no decisions to analyse. Be honest rather than showing an
+        # empty "0 decisions" review page.
+        self.app.push_screen(TextPage(
+            "Review",
+            "Move-by-move review needs the local solver, which only runs on "
+            "the side hosting the match. When you JOIN a battle the host drives "
+            "the dice, so there is no per-decision analysis on your screen.\n\n"
+            "Your final score is shown in the match-over panel above.",
+        ))
 
     def action_to_menu(self) -> None:
         self.client.close()

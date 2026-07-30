@@ -160,6 +160,40 @@ def test_online_snapshot_roundtrip():
 
 
 @pytest.mark.asyncio
+async def test_finished_host_keeps_snapshot_with_scores():
+    """A finished match KEEPS its online snapshot (marked finished, with running
+    totals + names) so beheer's outbound-only battle poll can read the final
+    standings. Before, the host cleared it on finish and the card froze on the
+    last mid-game state showing 'your turn' forever."""
+    from yahtzee_app.ui.app import GameConfig, OnlineHostScreen, YahtzeeApp
+
+    cfg.clear_online_snapshot()
+    config = GameConfig(difficulties=[], mode="normal", rules="official", n_games=1)
+    server = net.HostServer("Hosty")
+    server.seats.append(net.Seat(uuid="dev-1", name="Guesty", color="#e67e22"))
+    await server.start()
+    app = YahtzeeApp(no_update=True)
+    try:
+        async with app.run_test(size=(170, 45)) as pilot:
+            await pilot.pause()
+            app.push_screen(OnlineHostScreen(config, server))
+            await pilot.pause(0.2)
+            screen = app.screen
+            screen.game.finished = True
+            screen._recorded = True
+            screen._net_sync()
+            await pilot.pause(0.2)
+            snap = cfg.load_online_snapshot()
+            assert snap is not None            # kept for the poll, not cleared
+            assert snap.get("finished") is True
+            assert "totals" in snap and "names" in snap
+            assert len(snap["totals"]) == len(snap["names"])
+    finally:
+        await server.stop()
+        cfg.clear_online_snapshot()
+
+
+@pytest.mark.asyncio
 async def test_client_own_card_shown_first():
     from yahtzee_app.ui.app import OnlineClientScreen, PlayerCard, YahtzeeApp
 
@@ -174,6 +208,114 @@ async def test_client_own_card_shown_first():
         assert cards[0].player.name == "Me"  # your card first, host second
         assert cards[1].player.name == "Hosty"
         client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_pick_sends_only_no_local_echo():
+    """A joiner's own category pick must be SENT to the host, never scored
+    locally. Textual collects @on handlers from every class in the MRO and
+    calls each function object directly, so the base GameScreen._category_picked
+    used to fire alongside the client's override - running _score on the local
+    human, which logged the move a phantom second time on top of the host's
+    broadcast (the joiner saw every own move doubled). Exactly one path may run:
+    the client sends the action; the move is logged once, via _apply_state."""
+    from yahtzee_app.ui.app import OnlineClientScreen, PlayerCard, YahtzeeApp
+
+    me = net.device_id()
+    client = net.GameClient("127.0.0.1:59999", "Me")  # never connected
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        state = _client_state(me)
+        state["turn"]["rolls_used"] = 1  # a roll happened -> scoring is allowed
+        app.push_screen(OnlineClientScreen(client, state))
+        await pilot.pause(0.2)
+        screen = app.screen
+
+        scored, sent = [], []
+
+        def spy_score(*a, **k):
+            scored.append(a)
+
+        async def fake_send(msg):
+            sent.append(msg)
+
+        screen._score = spy_score          # would only be hit by a local echo
+        client.send_action = fake_send     # capture the action, no real socket
+
+        screen.query(PlayerCard)[0].post_message(PlayerCard.CategoryPicked(0))
+        await pilot.pause(0.2)
+
+        assert sent == [{"kind": "score", "category": 0}]  # sent to the host
+        assert scored == []                                 # never scored locally
+        # and no 'Me ... -> ' move line leaked into the local log
+        assert not any("Me" in ln and "→" in ln for ln in screen._log_history)
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_renders_own_match_over_frame():
+    """The host no longer shares the match-over lines; the joiner builds its
+    own framed panel from the finished state, with the winner in its OWN
+    perspective (You win! when it won) - not the host's bare shared lines."""
+    from yahtzee_app.ui.app import OnlineClientScreen, YahtzeeApp
+
+    me = net.device_id()
+    client = net.GameClient("127.0.0.1:59999", "Me")
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(OnlineClientScreen(client, _client_state(me)))
+        await pilot.pause(0.2)
+        screen = app.screen
+
+        snap = _client_state(me)
+        snap["finished"] = True
+        snap["round"] = 14
+        snap["seq"] = 50
+        snap["players"][0]["history"] = [{"boxes": [1] * 13, "ybonus": 0}]  # host low
+        snap["players"][1]["history"] = [{"boxes": [5] * 13, "ybonus": 0}]  # me high
+        screen._apply_state(snap, [])
+        await pilot.pause(0.1)
+
+        text = "\n".join(screen._log_history)
+        assert ("=" * 44) in text                 # framed, like the host
+        assert "MATCH OVER" in text
+        assert "You win!" in text                 # my own perspective (I won)
+        client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_setup_lines_above_round_header():
+    """Setup notices (You joined / X joined) form a preamble ABOVE the Round 1
+    header; the first move opens play and flushes the header below them."""
+    from yahtzee_app.ui.app import OnlineClientScreen, YahtzeeApp
+
+    me = net.device_id()
+    client = net.GameClient("127.0.0.1:59999", "Me")
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(170, 45)) as pilot:
+        await pilot.pause()
+        app.push_screen(OnlineClientScreen(client, _client_state(me)))
+        await pilot.pause(0.3)  # let on_mount's "You joined as" line land
+        screen = app.screen
+
+        s1 = _client_state(me)
+        s1["seq"] = 2
+        screen._apply_state(s1, ["[green]Matthijs joined.[/green]"])
+        s2 = _client_state(me)
+        s2["seq"] = 3
+        s2["turn"]["rolls_used"] = 1
+        screen._apply_state(
+            s2, ["[bold #3498db]Hosty[/bold #3498db] [dim](1 1 1 1 1)[/dim] Ones → [b]5[/b]"]
+        )
+        await pilot.pause(0.1)
+
+        hist = screen._log_history
+        joined_i = next(i for i, l in enumerate(hist) if "joined" in l)
+        header_i = next(i for i, l in enumerate(hist) if "Round 1/13" in l)
+        move_i = next(i for i, l in enumerate(hist) if "→" in l)
+        assert joined_i < header_i < move_i  # setup, then header, then moves
 
 
 @pytest.mark.asyncio

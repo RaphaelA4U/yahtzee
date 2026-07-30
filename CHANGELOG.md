@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.13.9
+
+- Joined players no longer see their own moves logged twice. Textual fires
+  both the base and the client score handler (same-named @on handlers do
+  not override), so the client scored locally AND rendered the host's
+  broadcast. One handler now dispatches to an overridable helper.
+- The joined side gets the same framed match-over panel as the host, with
+  the winner from its own perspective (You win! / X wins!).
+- Setup notices (hosting / joined) now sit above the Round 1 header with a
+  blank line, instead of being pushed underneath it.
+- Online matches publish running totals and keep their saved state after
+  finishing, so an outbound-only watcher (a lobby card) can show live
+  scores and the final standings instead of freezing mid-game.
+- Joined players no longer get an empty move-by-move review: it needs the
+  local solver, which only the hosting side runs.
+
 ## v1.13.8
 
 - No more spurious "Round 14/13" header on the joined side: after the
