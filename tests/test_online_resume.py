@@ -373,6 +373,48 @@ async def test_cli_host_flag_uses_fixed_room():
 
 
 @pytest.mark.asyncio
+async def test_battle_solo_autostarts_vs_one_bot():
+    """A beheer battle with no opponent seated (--autostart, no --expect) starts
+    at once against exactly one bot - never the manual lobby."""
+    from yahtzee_app.ui.app import OnlineHostScreen, YahtzeeApp
+
+    app = YahtzeeApp(no_update=True, online=("host", "ABC234", True, []))
+    async with app.run_test(size=(170, 45)) as pilot:
+        for _ in range(50):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, OnlineHostScreen):
+                break
+        assert isinstance(app.screen, OnlineHostScreen)  # not the lobby
+        screen = app.screen
+        assert screen.n_games == 1
+        assert len(screen.players) == 2
+        assert screen.players[0] is screen.human
+        assert screen.players[1].is_bot  # solo -> one bot opponent
+        await screen.server.stop()
+
+
+@pytest.mark.asyncio
+async def test_battle_with_opponent_autostarts_no_bot():
+    """A battle with a seated opponent autostarts a humans-only match (reserved
+    seat, no bot) - the opponent binds on join."""
+    from yahtzee_app.ui.app import OnlineHostScreen, YahtzeeApp
+
+    app = YahtzeeApp(no_update=True, online=("host", "ABC234", True, [("Matthijs", "#e67e22")]))
+    async with app.run_test(size=(170, 45)) as pilot:
+        for _ in range(50):
+            await pilot.pause(0.1)
+            if isinstance(app.screen, OnlineHostScreen):
+                break
+        assert isinstance(app.screen, OnlineHostScreen)
+        screen = app.screen
+        assert screen.n_games == 1
+        assert len(screen.players) == 2
+        assert not screen.players[1].is_bot  # reserved human seat, not a bot
+        assert screen.players[1].name == "Matthijs"
+        await screen.server.stop()
+
+
+@pytest.mark.asyncio
 async def test_cli_join_flag_prefills_lobby():
     from textual.widgets import Input
 

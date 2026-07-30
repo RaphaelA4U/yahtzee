@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.13.11
+
+- Orchestrated battles (the beheer /yahtzee host, launched with --autostart)
+  now always start immediately instead of dropping into the manual lobby: a
+  solo battle (a personal chat, nobody else seated) plays against one bot, and
+  a battle with opponents seats them and waits for them to join. The standalone
+  `yahtzee --host` (no --autostart) still opens the lobby as before.
+
 ## v1.13.10
 
 - Joined players now get their OWN move-by-move review and final accuracy.

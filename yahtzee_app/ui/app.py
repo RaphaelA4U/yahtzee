@@ -2616,16 +2616,20 @@ class YahtzeeApp(App):
         snap_room = ((snap or {}).get("online_host") or {}).get("room")
         if snap and snap_room == code and await self.resume_hosting():
             return
-        if expect:
-            # 1-on-1 chat battles: pre-seat the opponents (name + color) and
-            # start right away, no lobby. They bind to their seat on join.
+        if expect or autostart:
+            # Chat battles: start right away, never the manual lobby. With
+            # opponents we pre-seat them (they bind on join); solo (a personal
+            # chat, or nobody seated) gets one bot to play against.
             await self._start_hosting_with_roster(code, expect)
             return
         self.push_screen(HostLobbyScreen(room=code, autostart=autostart))
 
     async def _start_hosting_with_roster(self, code: str, expect: list[str]) -> None:
         config = GameConfig(
-            difficulties=[],  # humans-only battle, no bots
+            # No human opponents seated -> a solo battle (personal chat): give
+            # the host one bot so there is someone to play. With opponents we
+            # stay humans-only and wait for them to join.
+            difficulties=[] if expect else ["medium"],
             mode="normal",
             rules=str(load_settings().get("ruleset", "official")),
             n_games=1,  # chat battles are a single quick game

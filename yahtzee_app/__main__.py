@@ -64,8 +64,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--autostart", action="store_true",
-        help="with --host: begin the moment the first opponent connects "
-        "(no Enter needed); the lobby stays open until then",
+        help="with --host: start immediately, skipping the lobby. Solo (no "
+        "--expect) plays against one bot; pre-seated humans (--expect) bind on join",
     )
     parser.add_argument(
         "--expect", metavar="NAMES",
