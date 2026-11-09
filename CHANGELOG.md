@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.14.2
+
+- `.env` files are ignored by git (an old, unused games host password was in the history; it is not the one in use).
+
 ## v1.14.1
 
 - The games host for BM Beheer chat battles moved to the games library
