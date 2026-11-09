@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.14.1
+
+- The games host for BM Beheer chat battles moved to the games library
+  (github.com/RaphaelA4U/games, deploy/games-host); it installs every game
+  from one registry. Nothing changes in the game itself.
+
 ## v1.14.0
 
 - Fireworks when you win a match (rockets bursting into dice, plus a
