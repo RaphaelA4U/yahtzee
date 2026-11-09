@@ -21,6 +21,7 @@ SETTINGS_FILE = CONFIG_DIR / "settings.json"
 STATS_FILE = CONFIG_DIR / "stats.json"
 SAVE_FILE = CONFIG_DIR / "saved_game.json"
 ONLINE_SAVE_FILE = CONFIG_DIR / "saved_online.json"
+GAMES_FILE = CONFIG_DIR / "games.jsonl"  # every finished game with all its turns
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "mode": "normal",           # normal | hints | coach | auto
@@ -29,6 +30,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "n_games": 3,               # games per match: a column each, like the pad
     "speed": "normal",          # slow | normal | fast | instant
     "win_mode": True,           # endgame win-probability play in hints/auto
+    "win_animation": True,      # fireworks when you win the match
     "last_seen_version": None,  # for the what's-new message after updates
 }
 
@@ -123,13 +125,37 @@ def record_game(
     _write_json(STATS_FILE, stats)
 
 
-def record_game_result(entry: dict[str, Any]) -> None:
+def record_game_result(entry: dict[str, Any], game: dict[str, Any] | None = None) -> None:
     """Record one COMPLETED game (also mid-match), so abandoning a match
-    later never erases games that were actually played."""
+    later never erases games that were actually played. With the game
+    itself (its turn log), the whole game is also appended to games.jsonl,
+    one line per game (a few KB), so it can be replayed and reviewed later."""
+    date = datetime.now().isoformat(timespec="seconds")
     stats = load_stats()
-    entry = dict(entry, date=datetime.now().isoformat(timespec="seconds"))
-    stats.setdefault("games_v2", []).append(entry)
+    stats.setdefault("games_v2", []).append(dict(entry, date=date))
     _write_json(STATS_FILE, stats)
+    if game is not None:
+        try:
+            GAMES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with GAMES_FILE.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({**entry, "date": date, **game}, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+
+def load_game_logs() -> list[dict[str, Any]]:
+    """Every recorded game with its turns, oldest first."""
+    games = []
+    try:
+        lines = GAMES_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return games
+    for line in lines:
+        try:
+            games.append(json.loads(line))
+        except ValueError:
+            continue
+    return games
 
 
 def _bucket(games: list[dict], key) -> dict[str, list[dict]]:

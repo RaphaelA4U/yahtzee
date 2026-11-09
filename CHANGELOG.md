@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.14.0
+
+- Fireworks when you win a match (rockets bursting into dice, plus a
+  "YOU WON!" banner with your points and lead). Any key or click skips
+  them and does nothing else. Switch them off in the menu (Win animation).
+  Online, only the player who actually won sees them.
+- Every finished game is kept with all its turns in
+  `~/.config/yahtzee/games.jsonl`: per player the dice of every roll, the
+  held dice and the box scored, plus the coach decisions. A game replays
+  from it exactly, so it can be reviewed later.
+- The games host (beheer chat battles) now also installs solitaire and
+  sudoku, and its SSH port only listens for beheer.
+- CI runs on Ubuntu 24.04 again (the newest Ubuntu has no Python 3.9).
+
 ## v1.13.11
 
 - Orchestrated battles (the beheer /yahtzee host, launched with --autostart)

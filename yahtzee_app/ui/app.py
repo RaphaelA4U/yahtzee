@@ -20,8 +20,11 @@ import os
 import random
 import sys
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events, on, work
 from textual.app import App, ComposeResult
@@ -31,6 +34,7 @@ from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
+from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Input, RichLog, Static
 
@@ -64,9 +68,12 @@ from ..game import (
     RULESETS,
     UPPER,
     UPPER_BONUS_THRESHOLD,
+    YAHTZEE_EXTRA_BONUS,
     Game,
     Player,
     Scorecard,
+    counts_of,
+    turn_entry,
 )
 from ..hints import hint_for
 from .. import net
@@ -79,6 +86,23 @@ HUMAN_NAME = "You"
 ACCENT = "#875fff"   # Claude-style purple, leaning slightly blue
 HINT = "#ff9e3d"     # orange: hints, coach verdicts, bonuses (never yellow)
 WINC = "#4dd0e1"     # cyan-ish: WIN-mode/standings notes
+
+# Win fireworks: rockets climb, burst into dice and sparks, which fall and fade.
+FX_DT = 0.05            # seconds per frame
+FX_DURATION = 7.0       # seconds, unless a key or click skips it
+FX_GRAVITY = 14.0       # cells per second squared
+FX_SYMBOLS = "⚀⚁⚂⚃⚄⚅*+."
+
+
+def fx_colors() -> list[str]:
+    # Read ACCENT when drawing: an own --color replaces it at startup.
+    return [ACCENT, "red", WINC, HINT, "bold"]
+
+
+@lru_cache(maxsize=64)
+def _fx_style(style: str) -> Style:
+    return Style.parse(style) if style else Style()
+
 
 # Random bot names (US/UK), unique within a match, sampled 50/50 from
 # the female and male pools.
@@ -962,7 +986,10 @@ yahtzee --profile test (own settings and identity).
 [b u]The match[/b u]
 A match is 1 to 6 games; every game fills one column on your card, like
 the classic paper pad. The MATCH row keeps the running total; the highest
-match total wins.
+match total wins. Win it and fireworks go off (menu: Win animation);
+any key or click skips them.
+Every finished game is kept turn by turn (all dice, holds, and boxes) in
+games.jsonl next to your settings.
 
 [b u]Card rows[/b u]
   [b]Sum[/b]            points in the upper section so far
@@ -1047,6 +1074,7 @@ MENU_INFO = {
     "bots": "Number of computer opponents at the table.",
     "games": "Games per match; every game fills one column on your card.",
     "hints": "Solver advice after every roll (switch anytime with shift+tab).",
+    "anim": "Fireworks when you win the match; any key or click skips them.",
     "whatsnew": "What changed in recent updates.",
     "help": "All keys, commands, modes, and rules.",
     "stats": "Your match history and averages.",
@@ -1113,6 +1141,11 @@ class MenuScreen(Screen):
                 "hints", "Hints", "choice",
                 [("off", "normal"), ("on", "hints")],
                 index=1 if settings.get("mode") == "hints" else 0,
+            ),
+            MenuItem(
+                "anim", "Win animation", "choice",
+                [("on", True), ("off", False)],
+                index=0 if settings.get("win_animation", True) else 1,
             ),
             MenuItem("host", "Host online game"),
             MenuItem("join", "Join online game"),
@@ -1220,6 +1253,8 @@ class MenuScreen(Screen):
             settings["n_games"] = event.value
         elif event.item_id == "hints":
             settings["mode"] = event.value
+        elif event.item_id == "anim":
+            settings["win_animation"] = event.value
         save_settings(settings)
         self._update_info()
 
@@ -1360,6 +1395,169 @@ class ActionBar(Static):
         self.refresh()
 
 
+class Fireworks(Widget, can_focus=True):
+    """The win fireworks, on their own layer over the whole game screen.
+
+    Yahtzee has no single canvas to draw on (solitaire and sudoku draw the
+    show on their board), so this widget covers the screen instead: when the
+    show starts it freezes a picture of what is beneath and draws the
+    rockets, the bursting dice and the banner over it. The rest of the time
+    it is hidden (display: none) and never takes a click. While it runs it
+    holds the focus: any key or click skips the show and does nothing else.
+    """
+
+    class Skip(Message):
+        """A key or click during the fireworks."""
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self.banner: tuple[str, str] | None = None
+        self.particles: list[list] = []  # [x, y, vx, vy, char, style, life, rocket]
+        self._fx_time = 0.0
+        self._fx_next_rocket = 0.0
+        self._fx_rng = random.Random()
+        self._backdrop: list[Strip] = []
+        self._cells: dict[int, dict[int, tuple[str, Style]]] = {}
+        self._return_focus: Widget | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.banner is not None
+
+    def start(self, detail: str, backdrop: list[Strip]) -> None:
+        self.banner = ("Y O U   W O N !", detail)
+        self.particles = []
+        self._fx_time = 0.0
+        self._fx_next_rocket = 0.0
+        self._backdrop = list(backdrop)
+        self._return_focus = self.screen.focused
+        self.display = True
+        self._paint()
+        self.focus()
+
+    def stop(self) -> None:
+        was_active = self.banner is not None
+        self.banner = None
+        self.particles = []
+        self._backdrop = []
+        self._cells = {}
+        self.display = False
+        target, self._return_focus = self._return_focus, None
+        if was_active and target is not None and target.is_attached:
+            target.focus()
+
+    def step(self) -> bool:
+        """Advance one frame; False when the show is over."""
+        rng = self._fx_rng
+        w, h = max(self.size.width, 20), max(self.size.height, 10)
+        self._fx_time += FX_DT
+        if self._fx_time < FX_DURATION - 1.5 and self._fx_time >= self._fx_next_rocket:
+            self._fx_next_rocket = self._fx_time + rng.uniform(0.15, 0.45)
+            climb = rng.uniform(0.35, 0.8) * h
+            vy = -(2 * FX_GRAVITY * climb) ** 0.5
+            self.particles.append([rng.uniform(4, w - 4), h - 1, rng.uniform(-3, 3), vy,
+                                   "|", "bold", 9.0, True])
+        alive = []
+        for p in self.particles:
+            p[0] += p[2] * FX_DT
+            p[1] += p[3] * FX_DT
+            p[3] += FX_GRAVITY * FX_DT
+            p[6] -= FX_DT
+            if p[7] and p[3] >= -1.0:
+                # Apex: burst into a ring of dice and sparks in one color.
+                color = rng.choice(fx_colors())
+                for _ in range(rng.randint(14, 22)):
+                    angle = rng.uniform(0, 6.2832)
+                    speed = rng.uniform(5, 12)
+                    alive.append([p[0], p[1], math.cos(angle) * speed * 2, math.sin(angle) * speed - 3,
+                                  rng.choice(FX_SYMBOLS), color, rng.uniform(1.0, 2.0), False])
+                continue
+            if p[6] > 0 and -2 < p[0] < w + 2 and p[1] < h + 1:
+                alive.append(p)
+        self.particles = alive
+        self._paint()
+        return self._fx_time < FX_DURATION or bool(self.particles) and self._fx_time < FX_DURATION + 2
+
+    # -- drawing ---------------------------------------------------------
+    def _put(self, x: int, y: int, text: str, style: str = "") -> None:
+        w, h = self.size.width, self.size.height
+        if not 0 <= y < h:
+            return
+        row = self._cells.setdefault(y, {})
+        parsed = _fx_style(style)
+        for i, ch in enumerate(text):
+            if 0 <= x + i < w:
+                row[x + i] = (ch, parsed)
+
+    def _paint(self) -> None:
+        """Lay out this frame's cells (sparks first, the banner on top)."""
+        self._cells = {}
+        for x, y, _vx, _vy, ch, style, life, rocket in self.particles:
+            if rocket:
+                self._put(int(x), int(y), ch, style)
+                self._put(int(x), int(y) + 1, "'", "dim")
+            else:
+                self._put(int(x), int(y), ch, style if life > 0.45 else f"dim {style}")
+        if self.banner:
+            title, detail = self.banner
+            inner = max(len(title), len(detail)) + 8
+            x = max(0, (self.size.width - inner - 2) // 2)
+            y = max(0, (self.size.height - 6) // 2)
+            edge = "+" + "-" * inner + "+"
+            self._put(x, y, edge, f"bold {WINC}")
+            for r, (text, style) in enumerate([("", ""), (title, f"bold {WINC}"),
+                                                (detail, "bold"), ("", "")], start=1):
+                self._put(x, y + r, "|", f"bold {WINC}")
+                self._put(x + 1, y + r, f"{text:^{inner}}", style)
+                self._put(x + inner + 1, y + r, "|", f"bold {WINC}")
+            self._put(x, y + 5, edge, f"bold {WINC}")
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        width = self.size.width
+        if y < len(self._backdrop):
+            base = self._backdrop[y].crop_extend(0, width, None)
+        else:
+            base = Strip.blank(width)
+        row = self._cells.get(y)
+        if not row:
+            return base
+        segments: list[Segment] = []
+        pos = 0
+        for x in sorted(row):
+            ch, style = row[x]
+            if x > pos:
+                segments.extend(base.crop(pos, x))
+            # Keep the background of the cell beneath, so a spark over a
+            # highlighted row does not punch a hole in it.
+            under = list(base.crop(x, x + 1))
+            bg = under[0].style.bgcolor if under and under[0].style else None
+            segments.append(Segment(ch, Style(bgcolor=bg) + style if bg else style))
+            pos = x + 1
+        if pos < width:
+            segments.extend(base.crop(pos, width))
+        return Strip(segments, width)
+
+    # -- input: skip the show, nothing else ------------------------------
+    def on_key(self, event: events.Key) -> None:
+        event.stop()
+        event.prevent_default()
+        self.post_message(self.Skip())
+
+    # The press and release land here too; the skip waits for the click
+    # (on release), so it never falls through to what is beneath.
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        event.stop()
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        event.stop()
+
+    def on_click(self, event: events.Click) -> None:
+        event.stop()
+        if self.active:
+            self.post_message(self.Skip())
+
+
 class GameScreen(Screen):
     BINDINGS = [
         Binding("r,space", "roll", "Roll"),
@@ -1424,6 +1622,8 @@ class GameScreen(Screen):
         self._play_started = False
         self._log_history: list[str] = []
         self._restored_log: list[str] = snapshot.get("log", []) if snapshot else []
+        self._fx_timer = None
+        self._fx_shown = False
 
     # -- resume ------------------------------------------------------------
 
@@ -1453,6 +1653,12 @@ class GameScreen(Screen):
         game.turn.dice = [int(d) for d in turn.get("dice", [1] * 5)]
         game.turn.held = [bool(h) for h in turn.get("held", [False] * 5)]
         game.turn.rolls_used = int(turn.get("rolls_used", 0))
+        # The game log so far (local saves only: never part of the online state).
+        turn_log = snap.get("turn_log") or {}
+        game.seed = turn_log.get("seed")
+        game.log = [dict(t) for t in turn_log.get("turns", [])]
+        game.turn.rolls = [[int(d) for d in r] for r in turn_log.get("rolls", [])]
+        game.turn.holds = [[bool(h) for h in m] for m in turn_log.get("held", [])]
         self.players = players
         self.game = game
         self.coach = CoachTracker(
@@ -1500,6 +1706,17 @@ class GameScreen(Screen):
             ],
             "coach": [vars(d) for d in self.coach.decisions],
             "log": self._log_history[-300:],
+            "turn_log": self._turn_log(),
+        }
+
+    def _turn_log(self) -> dict:
+        """The current game's turn log plus the turn in progress, for the
+        save slot (so a continued game still lands whole in games.jsonl)."""
+        return {
+            "seed": self.game.seed,
+            "turns": self.game.log,
+            "rolls": self.game.turn.rolls,
+            "held": self.game.turn.holds,
         }
 
     def _touched(self) -> bool:
@@ -1550,6 +1767,7 @@ class GameScreen(Screen):
                                     )
                     yield Static("", id="cards-more", markup=True)
             yield ActionBar(FOOTER_PLAYING, id="footer-keys")
+        yield Fireworks(id="fireworks")
 
     def on_mount(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -1958,6 +2176,7 @@ class GameScreen(Screen):
             f"{CATEGORY_NAMES[option.category]}{joker} → {pts}{extra}",
             share=True,
         )
+        self.game.record_turn(option)
         self.game.advance()
         self.refresh_all()
         self._net_sync()
@@ -1994,7 +2213,14 @@ class GameScreen(Screen):
                     }
                     for p in self.players
                 ],
-            }
+            },
+            game={
+                "seed": self.game.seed,
+                "game_no": self.game_no,
+                "n_games": self.n_games,
+                "turns": list(self.game.log),
+                "coach": [vars(d) for d in self.coach.decisions if d.game == self.game_no],
+            },
         )
         self._assists = set()
 
@@ -2071,6 +2297,65 @@ class GameScreen(Screen):
             )
         self.log_write(f"[dim]{bar}[/dim]")
         self.log_write("")
+        if winner is self.human:
+            self._celebrate()
+
+    # -- win fireworks -------------------------------------------------------
+
+    def _celebrate(self) -> None:
+        """Fireworks for the local player's match win, once per match. Each
+        side of an online match decides this on its own screen, so only the
+        player who actually won sees them."""
+        if self._fx_shown or not load_settings().get("win_animation", True):
+            return
+        self._fx_shown = True
+        total = self.human.match_total()
+        parts = [f"{total} points"]
+        others = [p.match_total() for p in self.players if p is not self.human]
+        if others:
+            margin = total - max(others)
+            parts.append(f"{margin} ahead" if margin > 0 else "tied for first")
+        if self.n_games > 1:
+            parts.append(f"{self.n_games} games")
+        if self._final_accuracy is not None:
+            parts.append(f"accuracy {self._final_accuracy}%")
+        # After the next paint, so the frozen backdrop shows the final cards
+        # and the match-over panel.
+        self.call_after_refresh(self._start_fireworks, "   ".join(parts))
+
+    def _start_fireworks(self, detail: str) -> None:
+        if not self.is_mounted or self._fx_timer is not None or self.app.screen is not self:
+            return
+        try:
+            backdrop = self._compositor.render_strips()
+        except Exception:  # noqa: BLE001 - the show works on a blank backdrop too
+            backdrop = []
+        self.query_one(Fireworks).start(detail, backdrop)
+        self._fx_timer = self.set_interval(FX_DT, self._fx_step)
+
+    def _fx_step(self) -> None:
+        if not self.query_one(Fireworks).step():
+            self.stop_fireworks()
+
+    def stop_fireworks(self) -> None:
+        if self._fx_timer is not None:
+            self._fx_timer.stop()
+        self._fx_timer = None
+        try:
+            self.query_one(Fireworks).stop()
+        except NoMatches:
+            pass
+
+    @on(Fireworks.Skip)
+    def _skip_fx(self, _: Fireworks.Skip) -> None:
+        self.stop_fireworks()
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        # During the fireworks no binding runs (not even priority ones like
+        # shift+tab): the key reaches the fireworks and only skips them.
+        if getattr(self, "_fx_timer", None) is not None:
+            return False
+        return True
 
     # -- human actions -----------------------------------------------------
 
@@ -2520,6 +2805,8 @@ class YahtzeeApp(App):
     PlayerCard { width: auto; height: auto; margin-right: 1; border: blank; }
     PlayerCard.attention { border: ascii $accent; }
     #footer-keys { height: 1; color: ansi_bright_black; }
+    GameScreen { layers: default fx; }
+    Fireworks { layer: fx; width: 100%; height: 100%; display: none; }
 
     /* Online lobbies */
     #lobby-box { width: 1fr; height: 1fr; padding: 1 2; }
@@ -3244,6 +3531,7 @@ class OnlineHostScreen(GameScreen):
         snap = self._snapshot(finished=self._recorded)
         snap.pop("log", None)
         snap.pop("coach", None)
+        snap.pop("turn_log", None)  # local only: the protocol stays as it was
         uuids = []
         for idx, player in enumerate(self.players):
             if idx == 0:
@@ -3280,6 +3568,8 @@ class OnlineHostScreen(GameScreen):
                     "room": getattr(getattr(self.server, "relay", None), "room", None),
                     "host_name": self.server.host_name,
                 },
+                # The game log, so a resumed match still logs whole games.
+                turn_log=self._turn_log(),
             )
         )
 
@@ -3432,6 +3722,9 @@ class OnlineClientScreen(GameScreen):
         self._view_only = False
         self._prev_history = len(self.players[self.local_idx].history)
         self._match_done = False
+        # The game log, rebuilt from the host's broadcasts (see _observe_turns).
+        self._obs: dict = {"sig": None, "rolls": [], "held": [], "gap": False}
+        self._obs_turns: list[dict] = []
         # Viewer-relative colors: YOU are purple on your own screen. The host
         # serializes its own perspective, so remap locally and remember the
         # mapping to rewrite incoming (host-colored) log lines too.
@@ -3531,6 +3824,10 @@ class OnlineClientScreen(GameScreen):
             self._last_seq = seq
         prev_sig = (self.game_no, self.game.round, self.game.current_idx)
         prev_rolls = self.game.turn.rolls_used
+        before = [
+            (list(p.card.boxes), p.card.yahtzee_bonus_count, len(p.history))
+            for p in self.players
+        ]
         # Re-resolve which seat is me: a reserved seat's real uuid only lands
         # after the host rebinds it, so the first state may not carry it yet.
         if "uuids" in snap:
@@ -3556,6 +3853,7 @@ class OnlineClientScreen(GameScreen):
         game.turn.rolls_used = int(turn.get("rolls_used", 0))
         self.game_no = int(snap.get("game_no", 1))
         game.finished = bool(snap.get("finished"))
+        self._observe_turns(before)
         # A roll happened remotely (or our own roll came back): animate the
         # dice instead of snapping, so rolls look alive on this side too.
         new_sig = (self.game_no, game.round, game.current_idx)
@@ -3647,9 +3945,78 @@ class OnlineClientScreen(GameScreen):
                     }
                     for p in self.players
                 ],
-            }
+            },
+            game={
+                "seed": None,
+                "game_no": idx + 1,
+                "n_games": self.n_games,
+                "turns": [
+                    {k: v for k, v in t.items() if k != "game"}
+                    for t in self._obs_turns
+                    if t["game"] == idx + 1
+                ],
+                "coach": [vars(d) for d in self.coach.decisions if d.game == idx + 1],
+                # Rebuilt from the host's broadcasts, not rolled here.
+                "observed": True,
+            },
         )
+        self._obs_turns = [t for t in self._obs_turns if t["game"] > idx + 1]
         self._assists = set()
+
+    def _observe_turns(self, before: list[tuple[list, int, int]]) -> None:
+        """Rebuild the game log from the host's states, without changing
+        the protocol: a roll shows up as one more rolls_used (the dice and
+        the holds it was rolled with), a scored turn as a newly filled box.
+        `before` holds every player's (boxes, yahtzee bonuses, games done)
+        from before this state. A missed broadcast leaves that turn without
+        rolls rather than with wrong ones."""
+        obs = self._obs
+        for idx, (player, (boxes, ybonus, n_done)) in enumerate(zip(self.players, before)):
+            card = player.history[n_done] if len(player.history) > n_done else player.card
+            filled = [
+                c for c in range(N_CATEGORIES)
+                if c < len(boxes) and boxes[c] is None and card.boxes[c] is not None
+            ]
+            if len(filled) != 1:
+                continue
+            cat = filled[0]
+            game_no = n_done + 1
+            round_no = sum(1 for b in boxes if b is not None) + 1
+            rolls: list[list[int]] = []
+            held: list[list[bool]] = []
+            if obs["sig"] == (game_no, round_no, idx) and not obs["gap"]:
+                rolls, held = obs["rolls"], obs["held"]
+            option = None
+            if rolls:
+                prev = Scorecard(self.config.rules)
+                prev.boxes = list(boxes)
+                prev.yahtzee_bonus_count = ybonus
+                option = next(
+                    (o for o in prev.options(counts_of(rolls[-1])) if o.category == cat),
+                    None,
+                )
+                if option is None or option.points != card.boxes[cat]:
+                    option, rolls, held = None, [], []
+            bonus = YAHTZEE_EXTRA_BONUS if card.yahtzee_bonus_count > ybonus else 0
+            entry = turn_entry(
+                round_no, idx, player.name, rolls, held, option,
+                category=cat, points=card.boxes[cat], bonus=bonus,
+            )
+            entry["game"] = game_no
+            self._obs_turns.append(entry)
+        game = self.game
+        if game.finished or game.turn.rolls_used == 0:
+            return
+        sig = (self.game_no, game.round, game.current_idx)
+        if obs["sig"] != sig:
+            obs = self._obs = {"sig": sig, "rolls": [], "held": [], "gap": False}
+        used = game.turn.rolls_used
+        if used == len(obs["rolls"]) + 1:
+            if obs["rolls"]:
+                obs["held"].append(list(game.turn.held))
+            obs["rolls"].append(list(game.turn.dice))
+        elif used > len(obs["rolls"]):
+            obs["gap"] = True  # joined mid-turn or missed a roll
 
     # -- own actions go to the host ---------------------------------------
 

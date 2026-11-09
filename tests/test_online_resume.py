@@ -541,3 +541,35 @@ async def test_client_dedup_survives_color_change():
         logged = [ln for ln in screen._log_history if "Large Straight" in ln]
         assert len(logged) == 1, f"expected one, got {logged}"
         client.close()
+
+
+@pytest.mark.asyncio
+async def test_client_fireworks_only_for_the_winner():
+    """Online, each side decides on its own screen: the joiner who won gets
+    the fireworks, a joiner who lost does not."""
+    from yahtzee_app.ui.app import Fireworks, OnlineClientScreen, YahtzeeApp
+
+    me = net.device_id()
+    for my_boxes, host_boxes, expect in (([5] * 13, [1] * 13, True),
+                                         ([1] * 13, [5] * 13, False)):
+        client = net.GameClient("127.0.0.1:59999", "Me")
+        app = YahtzeeApp(no_update=True)
+        async with app.run_test(size=(170, 45)) as pilot:
+            await pilot.pause()
+            app.push_screen(OnlineClientScreen(client, _client_state(me)))
+            await pilot.pause(0.2)
+            screen = app.screen
+            snap = _client_state(me)
+            snap.update(finished=True, round=14, seq=50)
+            snap["players"][0]["history"] = [{"boxes": host_boxes, "ybonus": 0}]
+            snap["players"][1]["history"] = [{"boxes": my_boxes, "ybonus": 0}]
+            screen._apply_state(snap, [])
+            await pilot.pause(0.4)
+            fx = screen.query_one(Fireworks)
+            assert fx.active is expect
+            if expect:
+                assert "65 points" in fx.banner[1]
+                await pilot.press("v")  # skips only; the review stays closed
+                await pilot.pause()
+                assert not fx.active and app.screen is screen
+            client.close()

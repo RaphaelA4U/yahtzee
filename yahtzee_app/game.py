@@ -294,6 +294,10 @@ class TurnState:
         self.dice: list[int] = [1] * 5
         self.held: list[bool] = [False] * 5
         self.rolls_used = 0
+        # The turn as it happened, for the game log: the dice after every
+        # roll, and which dice were held going into each reroll.
+        self.rolls: list[list[int]] = []
+        self.holds: list[list[bool]] = []
 
     @property
     def rolls_left(self) -> int:
@@ -305,10 +309,13 @@ class TurnState:
     def roll(self) -> None:
         if self.rolls_left <= 0:
             raise ValueError("No rolls left")
+        if self.rolls_used > 0:
+            self.holds.append(list(self.held))
         for i in range(5):
             if self.rolls_used == 0 or not self.held[i]:
                 self.dice[i] = self.rng.randint(1, 6)
         self.rolls_used += 1
+        self.rolls.append(list(self.dice))
 
     def toggle_hold(self, idx: int) -> None:
         if self.rolls_used == 0:
@@ -344,6 +351,7 @@ class Game:
         # Dice use the OS cryptographic RNG (SystemRandom, /dev/urandom or
         # the platform equivalent) unless a seed is given for reproducible
         # games (--seed): then a seeded Mersenne Twister.
+        self.seed = seed
         self.rng: random.Random = (
             random.Random(seed) if seed is not None else random.SystemRandom()
         )
@@ -351,6 +359,20 @@ class Game:
         self.current_idx = 0
         self.turn = TurnState(self.rng)
         self.finished = False
+        # Every scored turn of this game, in order (see record_turn).
+        self.log: list[dict] = []
+
+    def record_turn(self, option: Option) -> dict:
+        """Log the current player's turn as it is scored with `option`
+        (call it right before advance). One entry per turn: the dice of
+        every roll, the dice held going into each reroll (held[k] belongs
+        to rolls[k + 1]), and the box filled with its points."""
+        entry = turn_entry(
+            self.round, self.current_idx, self.current.name,
+            self.turn.rolls, self.turn.holds, option,
+        )
+        self.log.append(entry)
+        return entry
 
     @property
     def current(self) -> Player:
@@ -370,3 +392,74 @@ class Game:
     def rankings(self) -> list[tuple[Player, int]]:
         ranked = sorted(self.players, key=lambda p: p.card.total(), reverse=True)
         return [(p, p.card.total()) for p in ranked]
+
+
+def turn_entry(
+    round_no: int,
+    player_idx: int,
+    name: str,
+    rolls: list[list[int]],
+    holds: list[list[bool]],
+    option: Option | None,
+    category: int | None = None,
+    points: int | None = None,
+    bonus: int = 0,
+) -> dict:
+    """One turn of the game log (games.jsonl). Without an option (an online
+    joiner only sees the result) pass category/points/bonus instead."""
+    if option is not None:
+        category, points, bonus = option.category, option.points, option.extra_bonus
+    assert category is not None
+    entry: dict = {
+        "round": round_no,
+        "player": player_idx,
+        "name": name,
+        "rolls": [list(r) for r in rolls],
+        "held": [list(h) for h in holds],
+        "cat": category,
+        "category": CATEGORY_NAMES[category],
+        "points": points,
+    }
+    if bonus:
+        entry["bonus"] = bonus
+    if option is not None and option.is_joker:
+        entry["joker"] = True
+    return entry
+
+
+def replay(turns: list[dict], n_players: int, rules: str = "official") -> list[Scorecard]:
+    """Rebuild every player's score card from one game's turn log.
+
+    Checks that the log adds up: held dice keep their value on a reroll,
+    every box is a legal choice for the last roll and scores what the log
+    says. Raises ValueError when it does not. A turn without rolls (an
+    online joiner may miss a roll broadcast) is taken at its word.
+    """
+    cards = [Scorecard(rules) for _ in range(n_players)]
+    for t in turns:
+        card = cards[int(t["player"])]
+        rolls = t.get("rolls") or []
+        held = t.get("held") or []
+        cat = int(t["cat"])
+        for k, mask in enumerate(held):
+            if k + 1 >= len(rolls):
+                break
+            for i in range(5):
+                if mask[i] and rolls[k + 1][i] != rolls[k][i]:
+                    raise ValueError(f"round {t['round']}: held die {i + 1} changed")
+        if rolls:
+            counts = counts_of(rolls[-1])
+            option = card.score_option(cat, counts)
+            if option.points != t["points"] or option.extra_bonus != t.get("bonus", 0):
+                raise ValueError(
+                    f"round {t['round']}: {CATEGORY_NAMES[cat]} scores "
+                    f"{option.points}, the log says {t['points']}"
+                )
+            card.apply(option, counts)
+        else:
+            if card.boxes[cat] is not None:
+                raise ValueError(f"round {t['round']}: {CATEGORY_NAMES[cat]} filled twice")
+            card.boxes[cat] = int(t["points"])
+            if t.get("bonus"):
+                card.yahtzee_bonus_count += 1
+    return cards

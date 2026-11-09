@@ -288,3 +288,102 @@ async def test_match_rolls_into_second_game():
         assert screen.game_no == 2
         assert len(screen.human.history) == 1
         assert screen.human.match_total() >= screen.human.history[0].total()
+
+
+async def _finish_match(pilot, app, you: int, bot: int):
+    """Start a one-game match and jump to its end with these box values."""
+    app.start_game(GameConfig(difficulties=["easy"], mode="normal", n_games=1))
+    await pilot.pause()
+    screen = app.screen
+    assert isinstance(screen, GameScreen)
+    screen.human.card.boxes = [you] * 13
+    screen.players[1].card.boxes = [bot] * 13
+    screen.game.finished = True
+    screen.start_turn()  # the real end-of-match path
+    return screen
+
+
+@pytest.mark.asyncio
+async def test_win_fireworks_show_and_any_key_only_skips():
+    from yahtzee_app.ui.app import Fireworks
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        screen = await _finish_match(pilot, app, you=5, bot=1)
+        await pilot.pause(0.6)
+        fx = screen.query_one(Fireworks)
+        assert fx.banner is not None and fx.banner[0] == "Y O U   W O N !"
+        assert "65 points" in fx.banner[1]
+        assert fx.particles  # rockets/sparks in the air
+        assert fx.display and fx.has_focus
+        await pilot.press("n")  # skips the show, does NOT start a new match
+        await pilot.pause()
+        assert fx.banner is None and not fx.display and app.screen is screen
+        await pilot.press("n")
+        await pilot.pause()
+        assert isinstance(app.screen, GameScreen) and app.screen is not screen
+
+
+@pytest.mark.asyncio
+async def test_win_fireworks_click_or_priority_key_only_skips():
+    from yahtzee_app.ui.app import Fireworks
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        screen = await _finish_match(pilot, app, you=5, bot=1)
+        await pilot.pause(0.3)
+        fx = screen.query_one(Fireworks)
+        assert fx.active
+        mode = screen.mode
+        await pilot.press("shift+tab")  # a priority binding: still only skips
+        await pilot.pause()
+        assert not fx.active and screen.mode == mode
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        screen = await _finish_match(pilot, app, you=5, bot=1)
+        await pilot.pause(0.3)
+        fx = screen.query_one(Fireworks)
+        assert fx.active
+        await pilot.click(offset=(4, 44))  # over the footer's "n new match"
+        await pilot.pause()
+        assert not fx.active and app.screen is screen
+        assert screen.query_one("#dice-row").has_focus  # focus comes back
+
+
+@pytest.mark.asyncio
+async def test_no_fireworks_when_lost_or_switched_off():
+    from yahtzee_app.ui.app import Fireworks
+    import yahtzee_app.config as cfg
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        screen = await _finish_match(pilot, app, you=1, bot=5)
+        await pilot.pause(0.4)
+        assert not screen.query_one(Fireworks).active
+        assert "MATCH OVER" in "\n".join(screen._log_history)
+
+    cfg.save_settings(dict(cfg.load_settings(), win_animation=False))
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        screen = await _finish_match(pilot, app, you=5, bot=1)
+        await pilot.pause(0.4)
+        assert not screen.query_one(Fireworks).active
+        assert "You win!" in "\n".join(screen._log_history)
+
+
+@pytest.mark.asyncio
+async def test_menu_win_animation_choice():
+    import yahtzee_app.config as cfg
+
+    app = YahtzeeApp(no_update=True)
+    async with app.run_test(size=(140, 45)) as pilot:
+        await pilot.pause()
+        menu = app.screen.query_one(AsciiMenu)
+        item = menu.item("anim")
+        assert item.label == "Win animation" and item.value is True
+        menu.selected = menu.visible_items().index(item)
+        await pilot.press("right")
+        await pilot.pause()
+        assert item.value is False
+        assert cfg.load_settings()["win_animation"] is False
