@@ -134,7 +134,7 @@ async def test_finished_match_logs_every_game_with_all_turns():
         assert screen._recorded
     logs = cfg.load_game_logs()
     assert [g["game_no"] for g in logs] == [1, 2]
-    assert logs[0]["seed"] == 4 and logs[1]["seed"] is None  # later games are unseeded
+    assert logs[0]["seed"] == 4 and logs[1]["seed"] == 4  # the whole match plays the seed
     stats = cfg.load_stats()["games_v2"]
     for line, entry in zip(logs, stats):
         # The stats entry, plus the game itself.
@@ -255,3 +255,25 @@ async def test_joined_player_logs_turns_seen_in_broadcasts():
     assert line["online"] and line["observed"] and line["game_no"] == 1
     assert [t["category"] for t in line["turns"]] == ["Small Straight", "Yahtzee"]
     assert "game" not in line["turns"][0]
+
+
+def test_a_seed_gives_everyone_the_same_dice():
+    # Fair races and challenges: with a seed every roll of a round is fixed, whatever
+    # was held before and whoever rolls it.
+    game = Game([Player("A", card=Scorecard()), Player("B", card=Scorecard())], seed=42)
+    game.turn.roll()
+    first_a = list(game.turn.dice)
+    game.turn.toggle_hold(0)
+    game.turn.roll()
+    second_a = list(game.turn.dice)
+    other = Game([Player("C", card=Scorecard())], seed=42)
+    other.turn.roll()
+    assert other.turn.dice == first_a
+    other.turn.toggle_hold(3)
+    other.turn.roll()
+    # Rerolled dice get the same values as in A's second roll; held dice keep theirs.
+    assert [other.turn.dice[i] for i in (1, 2, 4)] == [second_a[i] for i in (1, 2, 4)]
+    assert other.turn.dice[3] == first_a[3]
+    # Another seed, other dice; another game of the match, other dice.
+    assert Game([Player("D", card=Scorecard())], seed=43).turn.key != game.turn.key
+    assert Game([Player("E", card=Scorecard())], seed=42, game_no=2).dice_key() != "42:1:1"

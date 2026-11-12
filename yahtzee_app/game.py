@@ -289,8 +289,11 @@ class TurnState:
 
     MAX_ROLLS = 3
 
-    def __init__(self, rng: Optional[random.Random] = None) -> None:
+    def __init__(self, rng: Optional[random.Random] = None, key: Optional[str] = None) -> None:
         self.rng = rng or random.Random()
+        # With a seed every roll of a turn has fixed dice ("seed:game:round:roll"), so
+        # everyone who plays that seed rolls the same dice, whatever they held before.
+        self.key = key
         self.dice: list[int] = [1] * 5
         self.held: list[bool] = [False] * 5
         self.rolls_used = 0
@@ -311,9 +314,11 @@ class TurnState:
             raise ValueError("No rolls left")
         if self.rolls_used > 0:
             self.holds.append(list(self.held))
+        fixed = random.Random(f"{self.key}:{self.rolls_used}") if self.key is not None else None
         for i in range(5):
+            value = (fixed or self.rng).randint(1, 6)
             if self.rolls_used == 0 or not self.held[i]:
-                self.dice[i] = self.rng.randint(1, 6)
+                self.dice[i] = value
         self.rolls_used += 1
         self.rolls.append(list(self.dice))
 
@@ -344,20 +349,22 @@ class Game:
 
     ROUNDS = N_CATEGORIES
 
-    def __init__(self, players: list[Player], seed: Optional[int] = None) -> None:
+    def __init__(self, players: list[Player], seed: Optional[int] = None, game_no: int = 1) -> None:
         if not players:
             raise ValueError("At least 1 player required")
         self.players = players
         # Dice use the OS cryptographic RNG (SystemRandom, /dev/urandom or
-        # the platform equivalent) unless a seed is given for reproducible
-        # games (--seed): then a seeded Mersenne Twister.
+        # the platform equivalent) unless a seed is given (--seed): then every
+        # roll is fixed by seed, game, round and roll number, so the same seed
+        # gives every player the same dice (fair races and challenges).
         self.seed = seed
+        self.game_no = game_no
         self.rng: random.Random = (
             random.Random(seed) if seed is not None else random.SystemRandom()
         )
         self.round = 1
         self.current_idx = 0
-        self.turn = TurnState(self.rng)
+        self.turn = TurnState(self.rng, self.dice_key())
         self.finished = False
         # Every scored turn of this game, in order (see record_turn).
         self.log: list[dict] = []
@@ -387,7 +394,10 @@ class Game:
             if self.round > self.ROUNDS:
                 self.finished = True
                 return
-        self.turn = TurnState(self.rng)
+        self.turn = TurnState(self.rng, self.dice_key())
+
+    def dice_key(self) -> Optional[str]:
+        return None if self.seed is None else f"{self.seed}:{self.game_no}:{self.round}"
 
     def rankings(self) -> list[tuple[Player, int]]:
         ranked = sorted(self.players, key=lambda p: p.card.total(), reverse=True)

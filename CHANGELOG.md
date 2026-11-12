@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.15.0 (2026-11-12)
+- With a seed, every player rolls the same dice (`--seed N`): each roll is fixed by seed, game, round and roll number, whatever was held before. Fair for races and challenges; the whole match plays the seed. The game log also records the version, rules, bots and their level.
+
 ## v1.14.2
 
 - `.env` files are ignored by git (an old, unused games host password was in the history; it is not the one in use).

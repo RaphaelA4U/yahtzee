@@ -1656,6 +1656,8 @@ class GameScreen(Screen):
         # The game log so far (local saves only: never part of the online state).
         turn_log = snap.get("turn_log") or {}
         game.seed = turn_log.get("seed")
+        game.game_no = int(snap.get("game_no", 1))
+        game.turn.key = game.dice_key()
         game.log = [dict(t) for t in turn_log.get("turns", [])]
         game.turn.rolls = [[int(d) for d in r] for r in turn_log.get("rolls", [])]
         game.turn.holds = [[bool(h) for h in m] for m in turn_log.get("held", [])]
@@ -2216,6 +2218,10 @@ class GameScreen(Screen):
             },
             game={
                 "seed": self.game.seed,
+                "version": __version__,
+                "rules": self.config.rules,
+                "bots": sum(1 for p in self.players if p.is_bot),
+                "level": ",".join(p.difficulty for p in self.players if p.is_bot) or None,
                 "game_no": self.game_no,
                 "n_games": self.n_games,
                 "turns": list(self.game.log),
@@ -2239,7 +2245,7 @@ class GameScreen(Screen):
                 p.history.append(p.card)
                 p.card = Scorecard(self.config.rules)
             self.game_no += 1
-            self.game = Game(self.players)
+            self.game = Game(self.players, seed=self.game.seed, game_no=self.game_no)
             self.log_write(f"[b]Game {self.game_no} of {self.n_games}![/b]", share=True)
             self.checkpoint()
             self.refresh_all()
