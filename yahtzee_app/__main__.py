@@ -72,7 +72,19 @@ def main() -> None:
         help="with --host: comma-separated opponent names to pre-seat, so "
         "the match starts immediately (no lobby) and they can join anytime",
     )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="check one games.jsonl record (JSON on stdin) against its seed; "
+        "prints one JSON line, exit 0 if it holds up, 1 if not",
+    )
     args = parser.parse_args()
+
+    if args.verify:
+        # Before anything else: no update check, no solver tables, no files.
+        sys.dont_write_bytecode = True
+        from .verify import main as verify_main
+
+        raise SystemExit(verify_main())
 
     if args.profile:
         os.environ["YAHTZEE_PROFILE"] = args.profile

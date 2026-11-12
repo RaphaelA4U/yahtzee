@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.16.0 (2026-11-12)
+- `yahtzee --verify` checks one games.jsonl record (JSON on stdin) against its seed: every roll is recomputed from the seed and the holds, every turn is replayed with the rules, and your score and win are recomputed. It prints one JSON line and exits 0 if the record holds up, 1 if not; it writes nothing, skips the update check and never touches the network.
+
 ## v1.15.0 (2026-11-12)
 - With a seed, every player rolls the same dice (`--seed N`): each roll is fixed by seed, game, round and roll number, whatever was held before. Fair for races and challenges; the whole match plays the seed. The game log also records the version, rules, bots and their level.
 

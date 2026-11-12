@@ -113,6 +113,9 @@ classic paper pad. The highest match total wins.
 - Skip the menu from the shell: `yahtzee --new` (saved settings) or
   `yahtzee --bots 3 --level optimal --rules simple --games 3`;
   reproducible dice with `--seed 42`; all flags: `yahtzee --help`.
+- `yahtzee --verify < record.json` checks one finished seeded game (a line
+  of `~/.config/yahtzee/games.jsonl`) against its seed and prints one JSON
+  line: ok, score, won, moves and a reason if it does not hold up.
 - `F2` or `/screenshot` saves an SVG of the screen to Downloads.
 - Quit with `ctrl+q` (never by accident); dice use the OS cryptographic
   random generator.
